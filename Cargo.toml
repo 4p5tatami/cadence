@@ -1,0 +1,6 @@
+[workspace]
+members = [
+  "core/cadence-core",
+  "tools/cadence-cli",
+]
+resolver = "2"

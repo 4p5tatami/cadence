@@ -1,0 +1,10 @@
+[package]
+name = "cadence-core"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1"
+thiserror = "1"
+rodio = "0.17"
+parking_lot = "0.12"
