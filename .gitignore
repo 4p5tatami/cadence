@@ -1,6 +1,17 @@
-/target
+# Cargo / Rust
+target/
 **/*.rs.bk
+
+# Logs
+*.log
+
+# OS
 .DS_Store
-.idea
-.vscode
+Thumbs.db
+
+# Editors / IDEs
+.idea/
+.vscode/
+
+# Build outputs
 /build
