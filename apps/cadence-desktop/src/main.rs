@@ -8,7 +8,10 @@ use tauri::Manager;
 type Reply<T> = Sender<Result<T, String>>;
 
 enum Command {
-    Play { path: String, respond_to: Reply<TrackInfo> },
+    Play {
+        path: String,
+        respond_to: Reply<TrackInfo>,
+    },
     Pause,
     Resume,
     Stop,
@@ -39,7 +42,10 @@ impl PlayerService {
     fn play(&self, path: String) -> Result<TrackInfo, String> {
         let (reply_tx, reply_rx) = mpsc::channel();
         self.sender
-            .send(Command::Play { path, respond_to: reply_tx })
+            .send(Command::Play {
+                path,
+                respond_to: reply_tx,
+            })
             .map_err(|e| e.to_string())?;
         reply_rx.recv().map_err(|e| e.to_string())?
     }
@@ -64,13 +70,7 @@ fn player_loop(receiver: Receiver<Command>, ready: Sender<Result<(), String>>) {
     while let Ok(command) = receiver.recv() {
         match command {
             Command::Play { path, respond_to } => {
-                let result = match player.load_and_play(&path) {
-                    Ok(info) => Ok(info),
-                    Err(err) => {
-                        eprintln!("Rodio failed: {err}. Trying Symphonia for {path}...");
-                        player.load_and_play_symphonia(&path).map_err(|e| e.to_string())
-                    }
-                };
+                let result = player.load_and_play(&path).map_err(|e| e.to_string());
                 let _ = respond_to.send(result);
             }
             Command::Pause => player.pause(),
@@ -121,12 +121,14 @@ fn pick_file() -> Result<Option<String>, String> {
 }
 
 fn main() {
-    let service =
-        PlayerService::new().expect("Failed to initialise audio playback (is an output device available?)");
+    let service = PlayerService::new()
+        .expect("Failed to initialise audio playback (is an output device available?)");
 
     tauri::Builder::default()
         .manage(service)
-        .invoke_handler(tauri::generate_handler![play, pause, resume, stop, pick_file])
+        .invoke_handler(tauri::generate_handler![
+            play, pause, resume, stop, pick_file
+        ])
         .setup(|app| {
             if let Some(window) = app.get_window("main") {
                 window.set_focus().ok();

@@ -29,22 +29,14 @@ fn main() -> Result<()> {
 
     match cli.cmd {
         Commands::Play { path } => {
-            match player.load_and_play(&path) {
-                Ok(info) => {
-                    println!("Playing: {}", info.path);
-                    if let Some(d) = info.duration_ms {
-                        println!("Duration ~ {} ms", d);
-                    }
-                }
-                Err(e) => {
-                    eprintln!("Rodio failed ({e}). Trying Symphonia...");
-                    let info = player.load_and_play_symphonia(&path)?;
-                    println!("Playing (symphonia): {}", info.path);
-                    if let Some(d) = info.duration_ms {
-                        println!("Duration ~ {} ms", d);
-                    }
-                }
-            }
+            let info = player.load_and_play(&path)?;
+
+            println!(
+                "Playing: {} ({} ms)",
+                info.path,
+                info.duration_ms.unwrap_or(0)
+            );
+
             player.sleep_until_end();
         }
         Commands::Pause => player.pause(),
