@@ -10,15 +10,21 @@ pub struct TrackInfo {
 }
 
 pub struct Player {
+    _stream: OutputStream,
+    _handle: OutputStreamHandle,
     sink: Sink,
 }
 
 impl Player {
     pub fn new_default() -> Result<Self> {
-        let (_, handle) =
+        let (stream, handle) =
             OutputStream::try_default().context("No default output device available")?;
         let sink = Sink::try_new(&handle).context("Failed to create sink")?;
-        Ok(Self { sink })
+        Ok(Self {
+            _stream: stream,
+            _handle: handle,
+            sink,
+        })
     }
 
     pub fn load_and_play<P: AsRef<Path>>(&self, path: P) -> Result<TrackInfo> {

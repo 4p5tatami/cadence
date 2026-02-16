@@ -15,3 +15,13 @@ Thumbs.db
 
 # Build outputs
 /build
+
+*.mp3
+*.flac
+*.wav
+*.ogg
+*.aac
+*.m4a
+*.opus
+*.wma
+*.alac
