@@ -12,7 +12,7 @@ struct Cli {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    let player = Player::new_default()?;
+    let player = Player::new()?;
 
     // Play the file
     let info = player.load_and_play(&cli.path)?;

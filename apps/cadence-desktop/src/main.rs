@@ -56,7 +56,7 @@ impl PlayerService {
 }
 
 fn player_loop(receiver: Receiver<Command>, ready: Sender<Result<(), String>>) {
-    let player = match Player::new_default() {
+    let player = match Player::new() {
         Ok(player) => {
             let _ = ready.send(Ok(()));
             player

@@ -16,7 +16,7 @@ pub struct Player {
 }
 
 impl Player {
-    pub fn new_default() -> Result<Self> {
+    pub fn new() -> Result<Self> {
         let (stream, handle) =
             OutputStream::try_default().context("No default output device available")?;
         let sink = Sink::try_new(&handle).context("Failed to create sink")?;
