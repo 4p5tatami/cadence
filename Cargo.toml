@@ -2,6 +2,5 @@
 members = [
   "core/cadence-core",
   "tools/cadence-cli",
-  "apps/cadence-desktop",
 ]
 resolver = "2"
