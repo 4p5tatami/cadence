@@ -1,12 +1,13 @@
 use anyhow::{Context, Result};
 use rodio::{Decoder, OutputStream, OutputStreamHandle, Sink, Source};
 use serde::Serialize;
+use std::path::PathBuf;
 use std::time::Instant;
-use std::{fs::File, io::BufReader, path::Path};
+use std::{fs::File, io::BufReader};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct TrackInfo {
-    pub path: String,
+    pub path: PathBuf,
     pub duration_ms: Option<u64>,
 }
 
@@ -91,17 +92,15 @@ impl Player {
             .unwrap_or(0)
     }
 
-    pub fn load_and_play<P: AsRef<Path>>(&mut self, path: P) -> Result<TrackInfo> {
-        let p = path.as_ref();
-
+    pub fn load_and_play(&mut self, path: PathBuf) -> Result<TrackInfo> {
         // Open once for duration using the same decoder we'll use for playback.
-        let file = File::open(p).with_context(|| format!("Failed to open {:?}", p))?;
+        let file = File::open(&path).with_context(|| format!("Failed to open {:?}", path))?;
         let src = Decoder::new(BufReader::new(file))
-            .with_context(|| format!("Unsupported/invalid audio: {:?}", p))?;
+            .with_context(|| format!("Unsupported/invalid audio: {:?}", path))?;
         let dur = src.total_duration().map(|d| d.as_millis() as u64);
 
         let info = TrackInfo {
-            path: p.to_string_lossy().into_owned(),
+            path,
             duration_ms: dur,
         };
 
@@ -133,12 +132,13 @@ impl Player {
         self.current_track = None;
     }
 
-    /// Naive "seek": stops + re-queues from an offset by skipping samples (approx).
-    /// This is placeholder until we switch to a decoder with random access control.
-    pub fn seek_approx<P: AsRef<Path>>(&mut self, path: P, to_ms: u64) -> Result<()> {
+    pub fn seek_approx(&mut self, to_ms: u64) -> Result<()> {
         use std::time::Duration;
 
-        let path = path.as_ref();
+        let path = match &self.current_track {
+            Some(track) => &track.info.path,
+            None => return Ok(()), // No track to seek
+        };
 
         // Open once to query total duration
         let file = File::open(path)?;
@@ -166,9 +166,9 @@ impl Player {
         Ok(())
     }
 
-    pub fn advance_or_rewind<P: AsRef<Path>>(&mut self, path: P, delta_ms: i64) -> Result<()> {
+    pub fn advance_or_rewind(&mut self, delta_ms: i64) -> Result<()> {
         let current = self.current_position_ms() as i64;
         let target = (current + delta_ms).max(0) as u64;
-        self.seek_approx(path, target)
+        self.seek_approx(target)
     }
 }

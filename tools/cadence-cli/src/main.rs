@@ -2,13 +2,14 @@ use anyhow::Result;
 use cadence_core::Player;
 use clap::Parser;
 use std::io::{self, BufRead, Write};
+use std::path::PathBuf;
 use std::str::FromStr;
 
 #[derive(Parser)]
 #[command(name = "cadence", version, about = "Cadence CLI (MVP)")]
 struct Cli {
     /// Audio file to play
-    path: String,
+    path: PathBuf,
 }
 
 /// Commands available in the REPL
@@ -65,7 +66,7 @@ fn main() -> Result<()> {
     let info = player.load_and_play(cli.path.clone())?;
     println!(
         "Playing: {} ({} ms)",
-        info.path,
+        info.path.display(),
         info.duration_ms.unwrap_or(0)
     );
 
@@ -103,7 +104,7 @@ fn main() -> Result<()> {
                 println!("Stopped");
             }
             Ok(Command::Advance { seconds }) => {
-                if let Err(e) = player.advance_or_rewind(&cli.path, seconds * 1000) {
+                if let Err(e) = player.advance_or_rewind(seconds * 1000) {
                     println!("Error: {}", e);
                 }
             }
