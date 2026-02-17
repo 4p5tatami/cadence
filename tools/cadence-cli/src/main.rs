@@ -21,7 +21,7 @@ fn main() -> Result<()> {
         info.path,
         info.duration_ms.unwrap_or(0)
     );
-    println!("Commands: pause, resume, stop, seek <ms>, quit");
+    println!("Commands: pause, resume, stop, quit");
 
     // REPL loop for commands
     let stdin = io::stdin();
@@ -52,28 +52,12 @@ fn main() -> Result<()> {
                 player.stop();
                 println!("Stopped");
             }
-            "seek" => {
-                if parts.len() < 2 {
-                    println!("Usage: seek <milliseconds>");
-                } else {
-                    match parts[1].parse::<u64>() {
-                        Ok(ms) => {
-                            if let Err(e) = player.seek_approx(&cli.path, ms) {
-                                println!("Seek error: {}", e);
-                            } else {
-                                println!("Seeked to {} ms", ms);
-                            }
-                        }
-                        Err(_) => println!("Invalid number: {}", parts[1]),
-                    }
-                }
-            }
             "quit" | "q" | "exit" => {
                 player.stop();
                 break;
             }
             "help" | "h" => {
-                println!("Commands: pause, resume, stop, seek <ms>, quit");
+                println!("Commands: pause, resume, stop, quit");
             }
             _ => {
                 println!("Unknown command: {}. Type 'help' for commands.", parts[0]);
