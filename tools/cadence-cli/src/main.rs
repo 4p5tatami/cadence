@@ -14,7 +14,7 @@ struct Cli {
 
 /// Commands available in the REPL
 #[derive(Debug, PartialEq)]
-enum Command {
+enum CliCommand {
     Pause,
     Resume,
     Stop,
@@ -23,7 +23,7 @@ enum Command {
     Help,
 }
 
-impl FromStr for Command {
+impl FromStr for CliCommand {
     type Err = String;
 
     fn from_str(input: &str) -> Result<Self, Self::Err> {
@@ -34,22 +34,22 @@ impl FromStr for Command {
         }
 
         match parts[0] {
-            "pause" => Ok(Command::Pause),
-            "resume" => Ok(Command::Resume),
-            "stop" => Ok(Command::Stop),
+            "pause" => Ok(CliCommand::Pause),
+            "resume" => Ok(CliCommand::Resume),
+            "stop" => Ok(CliCommand::Stop),
             "+" | "-" => {
                 if parts.len() < 2 {
                     Err("Usage: +/- <seconds>. Enter a number after +/-".to_string())
                 } else {
                     let signed = format!("{}{}", parts[0], parts[1]);
                     match signed.parse::<i64>() {
-                        Ok(seconds) => Ok(Command::Advance { seconds }),
+                        Ok(seconds) => Ok(CliCommand::Advance { seconds }),
                         Err(_) => Err(format!("Invalid number: {}", parts[1])),
                     }
                 }
             }
-            "quit" | "q" | "exit" => Ok(Command::Quit),
-            "help" | "h" => Ok(Command::Help),
+            "quit" | "q" | "exit" => Ok(CliCommand::Quit),
+            "help" | "h" => Ok(CliCommand::Help),
             cmd => Err(format!(
                 "Unknown command: {}. Type 'help' for commands.",
                 cmd
@@ -90,29 +90,29 @@ fn main() -> Result<()> {
             continue;
         }
 
-        match input.parse::<Command>() {
-            Ok(Command::Pause) => {
+        match input.parse::<CliCommand>() {
+            Ok(CliCommand::Pause) => {
                 player.pause();
                 println!("Paused");
             }
-            Ok(Command::Resume) => {
+            Ok(CliCommand::Resume) => {
                 player.resume();
                 println!("Resumed");
             }
-            Ok(Command::Stop) => {
+            Ok(CliCommand::Stop) => {
                 player.stop();
                 println!("Stopped");
             }
-            Ok(Command::Advance { seconds }) => {
+            Ok(CliCommand::Advance { seconds }) => {
                 if let Err(e) = player.advance_or_rewind(seconds * 1000) {
                     println!("Error: {}", e);
                 }
             }
-            Ok(Command::Quit) => {
+            Ok(CliCommand::Quit) => {
                 player.stop();
                 break;
             }
-            Ok(Command::Help) => {
+            Ok(CliCommand::Help) => {
                 println!("{}", commands_description);
             }
             Err(e) => {
