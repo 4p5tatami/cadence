@@ -51,10 +51,10 @@ impl CurrentTrack {
         self.last_playback_time = Some(Instant::now());
     }
 
-    /// Update position and reset time tracking (used after seek)
-    fn set_position(&mut self, position_ms: u64) {
+    /// Update position after seek, preserving playing/paused state
+    fn set_position(&mut self, position_ms: u64, playing: bool) {
         self.last_playback_position = position_ms;
-        self.last_playback_time = Some(Instant::now());
+        self.last_playback_time = if playing { Some(Instant::now()) } else { None };
     }
 }
 
@@ -155,12 +155,21 @@ impl Player {
 
         let skipped = src.skip_duration(to); // returns a Source wrapper, not a Duration
 
+        let was_playing = 
+            self.current_track.as_ref()
+            .map(|t| t.last_playback_time.is_some())
+            .unwrap_or(false);
+
         self.sink.clear();
         self.sink.append(skipped);
-        self.sink.play();
+        if was_playing {
+            self.sink.play();
+        } else {
+            self.sink.pause();
+        }
 
         if let Some(track) = &mut self.current_track {
-            track.set_position(to_ms);
+            track.set_position(to_ms, was_playing);
         }
 
         Ok(())
