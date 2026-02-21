@@ -5,16 +5,14 @@ Syncs playback across Windows & Android — like Spotify Connect, but with suppo
 
 ## Features
 - Play/Pause/Resume/Stop local audio
-- Seek forward/rewind by seconds
+- Seek to any position (frame-accurate, via symphonia)
 - Supports FLAC, WAV, OGG, MP3, M4A, AAC, Opus, WMA
 - Desktop app (Tauri + React)
-- CLI for terminal use
 
 ## Project structure
 
 ```
-core/cadence-core        # Audio engine (rodio-based), shared library
-tools/cadence-cli        # Terminal interface
+core/cadence-core        # Audio engine (rodio + symphonia), shared library
 apps/cadence-desktop     # Desktop app (Tauri + React + TypeScript)
 ```
 
@@ -31,11 +29,6 @@ apps/cadence-desktop     # Desktop app (Tauri + React + TypeScript)
 cd apps/cadence-desktop
 npm install
 npm run tauri dev
-```
-
-### Run the CLI
-```bash
-cargo run -p cadence-cli -- "path/to/music.flac"
 ```
 
 ## Roadmap

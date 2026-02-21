@@ -3,7 +3,8 @@ use rodio::{Decoder, OutputStream, OutputStreamHandle, Sink, Source};
 use serde::Serialize;
 use std::path::PathBuf;
 use std::time::Instant;
-use std::{fs::File, io::BufReader};
+use std::fs::File;
+use std::io::BufReader;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct TrackInfo {
@@ -16,8 +17,8 @@ pub struct TrackInfo {
 pub struct CurrentTrack {
     /// Information about the track (path, duration)
     pub info: TrackInfo,
-    /// When playback last started/resumed; None when paused
-    pub last_playback_time: Option<Instant>,
+    /// Timestamp when playback last started/resumed; None when paused
+    pub maybe_last_playback_timestamp: Option<Instant>,
     /// Position in ms at the time of last playback start/pause
     pub last_playback_position: u64,
 }
@@ -27,15 +28,15 @@ impl CurrentTrack {
     fn new(info: TrackInfo) -> Self {
         Self {
             info,
-            last_playback_time: Some(Instant::now()),
+            maybe_last_playback_timestamp: Some(Instant::now()),
             last_playback_position: 0,
         }
     }
 
     /// Get the current playback position in milliseconds
     pub fn current_position_ms(&self) -> u64 {
-        match self.last_playback_time {
-            Some(instant) => self.last_playback_position + instant.elapsed().as_millis() as u64,
+        match self.maybe_last_playback_timestamp {
+            Some(timestamp) => self.last_playback_position + timestamp.elapsed().as_millis() as u64,
             None => self.last_playback_position,
         }
     }
@@ -43,18 +44,18 @@ impl CurrentTrack {
     /// Mark as paused, capturing current position
     fn pause(&mut self) {
         self.last_playback_position = self.current_position_ms();
-        self.last_playback_time = None;
+        self.maybe_last_playback_timestamp = None;
     }
 
     /// Mark as resumed, starting time tracking from now
     fn resume(&mut self) {
-        self.last_playback_time = Some(Instant::now());
+        self.maybe_last_playback_timestamp = Some(Instant::now());
     }
 
     /// Update position after seek, preserving playing/paused state
     fn set_position(&mut self, position_ms: u64, playing: bool) {
         self.last_playback_position = position_ms;
-        self.last_playback_time = if playing { Some(Instant::now()) } else { None };
+        self.maybe_last_playback_timestamp = if playing { Some(Instant::now()) } else { None };
     }
 }
 
@@ -132,41 +133,20 @@ impl Player {
         self.current_track = None;
     }
 
-    pub fn seek_approx(&mut self, to_ms: u64) -> Result<()> {
+    pub fn seek(&mut self, to_ms: u64) -> Result<()> {
         use std::time::Duration;
 
-        let path = match &self.current_track {
-            Some(track) => &track.info.path,
-            None => return Ok(()), // No track to seek
-        };
+        let Some(track) = &self.current_track else { return Ok(()) };
 
-        // Open once to query total duration
-        let file = File::open(path)?;
-        let src = Decoder::new(BufReader::new(file))?;
-        let to = Duration::from_millis(to_ms);
-
-        if let Some(total) = src.total_duration() {
-            if to >= total {
-                // Seeking past EOF: just stop.
+        if let Some(dur) = track.info.duration_ms {
+            if to_ms >= dur {
                 self.stop();
                 return Ok(());
             }
         }
 
-        let skipped = src.skip_duration(to); // returns a Source wrapper, not a Duration
-
-        let was_playing = 
-            self.current_track.as_ref()
-            .map(|t| t.last_playback_time.is_some())
-            .unwrap_or(false);
-
-        self.sink.clear();
-        self.sink.append(skipped);
-        if was_playing {
-            self.sink.play();
-        } else {
-            self.sink.pause();
-        }
+        let was_playing = track.maybe_last_playback_timestamp.is_some();
+        self.sink.try_seek(Duration::from_millis(to_ms)).map_err(|e| anyhow::anyhow!("{e}"))?;
 
         if let Some(track) = &mut self.current_track {
             track.set_position(to_ms, was_playing);
@@ -178,6 +158,6 @@ impl Player {
     pub fn advance_or_rewind(&mut self, delta_ms: i64) -> Result<()> {
         let current = self.current_position_ms() as i64;
         let target = (current + delta_ms).max(0) as u64;
-        self.seek_approx(target)
+        self.seek(target)
     }
 }

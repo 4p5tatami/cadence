@@ -10,6 +10,7 @@ enum PlayerMessage {
     Resume,
     Stop,
     Advance(i64, mpsc::SyncSender<Result<(), String>>),
+    Seek(u64, mpsc::SyncSender<Result<(), String>>),
     Status(mpsc::SyncSender<StatusResponse>),
 }
 
@@ -53,11 +54,15 @@ fn spawn_player_thread() -> mpsc::Sender<PlayerMessage> {
                     let result = player.advance_or_rewind(delta_ms).map_err(|e| e.to_string());
                     reply.send(result).ok();
                 }
+                PlayerMessage::Seek(to_ms, reply) => {
+                    let result = player.seek(to_ms).map_err(|e| e.to_string());
+                    reply.send(result).ok();
+                }
                 PlayerMessage::Status(reply) => {
                     let position_ms = player.current_position_ms();
                     let paused = player
                         .current_track()
-                        .map(|t| t.last_playback_time.is_none())
+                        .map(|t| t.maybe_last_playback_timestamp.is_none())
                         .unwrap_or(false);
                     reply.send(StatusResponse {
                         path: player.current_track().map(|t| t.info.path.to_string_lossy().into_owned()),
@@ -103,6 +108,13 @@ fn advance(delta_ms: i64, handle: State<PlayerHandle>) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn seek(to_ms: u64, handle: State<PlayerHandle>) -> Result<(), String> {
+    let (tx, rx) = mpsc::sync_channel(1);
+    handle.tx.send(PlayerMessage::Seek(to_ms, tx)).ok();
+    rx.recv().map_err(|_| "Player thread died".to_string())?
+}
+
+#[tauri::command]
 fn status(handle: State<PlayerHandle>) -> StatusResponse {
     let (tx, rx) = mpsc::sync_channel(1);
     handle.tx.send(PlayerMessage::Status(tx)).ok();
@@ -121,7 +133,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage(PlayerHandle { tx: spawn_player_thread() })
         .invoke_handler(tauri::generate_handler![
-            play, pause, resume, stop, advance, status
+            play, pause, resume, stop, advance, seek, status
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -1,9 +1,0 @@
-[package]
-name = "cadence-cli"
-version = "0.1.0"
-edition = "2021"
-
-[dependencies]
-anyhow = "1"
-clap = { version = "4", features = ["derive"] }
-cadence-core = { path = "../../core/cadence-core" }

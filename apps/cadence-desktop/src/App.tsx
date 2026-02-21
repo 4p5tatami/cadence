@@ -1,12 +1,17 @@
-import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import "./App.css";
 import { Button } from "@/components/ui/button";
+import { Slider } from "@/components/ui/slider";
+import { usePlayback } from "@/hooks/usePlayback";
+
+function fmt(ms: number) {
+    const s = Math.floor(ms / 1000);
+    return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+}
 
 function App() {
-    const [nowPlaying, setNowPlaying] = useState<string | null>(null);
-    const [paused, setPaused] = useState(false);
+    const { displayMs, durationMs, paused, active, trackPath, onDragChange, onDragCommit, sync } = usePlayback();
 
     const handleBrowse = async () => {
         const path = await open({
@@ -15,28 +20,24 @@ function App() {
         });
         if (!path) return;
         await invoke("play", { path });
-        setNowPlaying(path);
-        setPaused(false);
+        await sync();
     };
 
     const handlePause = async () => {
-        if (paused) {
-            await invoke("resume");
-        } else {
-            await invoke("pause");
-        }
-        setPaused(!paused);
+        await invoke(paused ? "resume" : "pause");
+        await sync();
     };
 
     const handleStop = async () => {
         await invoke("stop");
-        setNowPlaying(null);
-        setPaused(true);
+        await sync();
     };
 
     const handleAdvance = async (seconds: number) => {
         await invoke("advance", { deltaMs: seconds * 1000 });
     };
+
+    const filename = trackPath ? (trackPath.split("\\").at(-1) ?? trackPath) : null;
 
     return (
         <main style={{ fontFamily: "Roboto", padding: "1rem", fontWeight: 500 }}>
@@ -44,30 +45,36 @@ function App() {
             <Button variant={"outline"} onClick={handleBrowse} style={{ marginTop: "1.5rem" }}>
                 Browse
             </Button>
-            {nowPlaying && (
-                <p style={{ color: "#888", marginTop: "1.5rem" }}>
-                    Now playing: {(nowPlaying.split("\\").at(-1) ?? nowPlaying)}
-                </p>
+            {filename && (
+                <p style={{ color: "#888", marginTop: "1.5rem" }}>{filename}</p>
             )}
-            {nowPlaying && (
-                <Button variant={"outline"} onClick={handlePause} style={{ marginTop: "1.5rem" }}>
-                    {paused ? "Resume" : "Pause"}
-                </Button>
+            {active && (
+                <div style={{ marginTop: "1.5rem" }}>
+                    <Slider
+                        value={[displayMs]}
+                        min={0}
+                        max={durationMs || 1}
+                        step={500}
+                        onValueChange={([ms]) => onDragChange(ms)}
+                        onValueCommit={([ms]) => { onDragCommit(ms); }}
+                    />
+                    <div style={{ display: "flex", justifyContent: "space-between", marginTop: "0.25rem", color: "#888", fontSize: "0.75rem" }}>
+                        <span>{fmt(displayMs)}</span>
+                        <span>{fmt(durationMs)}</span>
+                    </div>
+                </div>
             )}
-            {nowPlaying && (
-                <Button variant={"outline"} onClick={() => handleAdvance(-10)} style={{ marginLeft: "0.5rem" }}>
-                    -10s
-                </Button>
+            {active && (
+                <div style={{ display: "flex", justifyContent: "center", gap: "0.5rem", marginTop: "1rem" }}>
+                    <Button variant={"outline"} onClick={() => handleAdvance(-10)}>-10s</Button>
+                    <Button variant={"outline"} onClick={handlePause}>{paused ? "Resume" : "Pause"}</Button>
+                    <Button variant={"outline"} onClick={() => handleAdvance(10)}>+10s</Button>
+                </div>
             )}
-            {nowPlaying && (
-                <Button variant={"outline"} onClick={() => handleAdvance(10)} style={{ marginLeft: "0.5rem" }}>
-                    +10s
-                </Button>
-            )}
-            {nowPlaying && (
-                <Button variant={"outline"} onClick={handleStop} style={{ marginLeft: "0.5rem" }}>
-                    Stop
-                </Button>
+            {active && (
+                <div style={{ display: "flex", justifyContent: "center", gap: "0.5rem", marginTop: "1rem" }}>
+                    <Button variant={"outline"} onClick={handleStop}>Stop</Button>
+                </div>
             )}
         </main>
     );
