@@ -18,16 +18,32 @@ apps/cadence-desktop     # Desktop app (Tauri + React + TypeScript)
 
 ## Development
 
-### Requirements
-- Rust (latest stable)
-- Node.js + npm
-- Visual Studio Build Tools (Windows)
-- WebView2 (Windows, usually pre-installed)
+### Quick Setup (Automated)
+
+**Linux/macOS:**
+```bash
+./setup.sh
+```
+
+**Windows (PowerShell as Admin):**
+```powershell
+.\setup.ps1
+```
+
+This automatically installs all dependencies and sets up the project.
+
+### Manual Setup
+
+**Requirements:**
+- **Node.js 20.19+ or 22.12+**
+- **Rust** (latest stable)
+- **System dependencies** (Linux: WebKit2GTK, ALSA, etc. | Windows: Visual Studio Build Tools, WebView2)
+
+> **📋 See [REQUIREMENTS.md](REQUIREMENTS.md) for detailed installation instructions**
 
 ### Run the desktop app
 ```bash
 cd apps/cadence-desktop
-npm install
 npm run tauri dev
 ```
 
