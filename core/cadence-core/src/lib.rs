@@ -1,3 +1,6 @@
+pub mod library;
+pub use library::{Library, LibraryRecord, TrackRecord};
+
 use anyhow::{Context, Result};
 use rodio::{Decoder, OutputStream, OutputStreamHandle, Sink, Source};
 use serde::Serialize;
@@ -9,7 +12,23 @@ use std::io::BufReader;
 #[derive(Debug, Clone, Serialize)]
 pub struct TrackInfo {
     pub path: PathBuf,
-    pub duration_ms: Option<u64>,
+    pub duration_ms: u64,
+    pub title: Option<String>,
+    pub artist: Option<String>,
+}
+
+fn probe_tags(path: &std::path::Path) -> (Option<String>, Option<String>) {
+    use lofty::prelude::*;
+    let Some(tagged) = lofty::probe::Probe::open(path).ok()
+        .and_then(|p| p.guess_file_type().ok())
+        .and_then(|p| p.read().ok())
+    else {
+        return (None, None);
+    };
+    let tag = tagged.primary_tag().or_else(|| tagged.first_tag());
+    let title = tag.and_then(|t| t.title().as_deref().map(String::from));
+    let artist = tag.and_then(|t| t.artist().as_deref().map(String::from));
+    (title, artist)
 }
 
 /// Represents the current state of a playing track
@@ -18,7 +37,7 @@ pub struct CurrentTrack {
     /// Information about the track (path, duration)
     pub info: TrackInfo,
     /// Timestamp when playback last started/resumed; None when paused
-    pub maybe_last_playback_timestamp: Option<Instant>,
+    pub last_playback_timestamp: Option<Instant>,
     /// Position in ms at the time of last playback start/pause
     pub last_playback_position: u64,
 }
@@ -28,14 +47,14 @@ impl CurrentTrack {
     fn new(info: TrackInfo) -> Self {
         Self {
             info,
-            maybe_last_playback_timestamp: Some(Instant::now()),
+            last_playback_timestamp: Some(Instant::now()),
             last_playback_position: 0,
         }
     }
 
     /// Get the current playback position in milliseconds
     pub fn current_position_ms(&self) -> u64 {
-        match self.maybe_last_playback_timestamp {
+        match self.last_playback_timestamp {
             Some(timestamp) => self.last_playback_position + timestamp.elapsed().as_millis() as u64,
             None => self.last_playback_position,
         }
@@ -44,19 +63,65 @@ impl CurrentTrack {
     /// Mark as paused, capturing current position
     fn pause(&mut self) {
         self.last_playback_position = self.current_position_ms();
-        self.maybe_last_playback_timestamp = None;
+        self.last_playback_timestamp = None;
     }
 
     /// Mark as resumed, starting time tracking from now
     fn resume(&mut self) {
-        self.maybe_last_playback_timestamp = Some(Instant::now());
+        self.last_playback_timestamp = Some(Instant::now());
     }
 
     /// Update position after seek, preserving playing/paused state
     fn set_position(&mut self, position_ms: u64, playing: bool) {
         self.last_playback_position = position_ms;
-        self.maybe_last_playback_timestamp = if playing { Some(Instant::now()) } else { None };
+        self.last_playback_timestamp = if playing { Some(Instant::now()) } else { None };
     }
+}
+
+/// Fallback duration probe for files where the decoder can't report total_duration()
+/// (e.g. VBR MP3s without a Xing/VBRI header).
+/// Fast path: reads n_frames from codec params. Slow path: walks all packets.
+fn scan_duration_ms(path: &std::path::Path) -> Option<u64> {
+    use symphonia::core::formats::FormatOptions;
+    use symphonia::core::io::MediaSourceStream;
+    use symphonia::core::meta::MetadataOptions;
+    use symphonia::core::probe::Hint;
+
+    let file = File::open(path).ok()?;
+    let mss = MediaSourceStream::new(Box::new(file), Default::default());
+    let mut hint = Hint::new();
+    if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+        hint.with_extension(ext);
+    }
+    let mut probed = symphonia::default::get_probe()
+        .format(&hint, mss, &FormatOptions::default(), &MetadataOptions::default())
+        .ok()?;
+
+    let track = probed.format.default_track()?;
+
+    // Fast path: n_frames already known from the container/header.
+    if let (Some(n_frames), Some(sr)) = (track.codec_params.n_frames, track.codec_params.sample_rate) {
+        return Some(n_frames * 1000 / sr as u64);
+    }
+
+    // Slow path: scan every packet and accumulate the highest end-timestamp.
+    let time_base = track.codec_params.time_base?;
+    let track_id = track.id;
+    let mut end_ts = 0u64;
+    loop {
+        match probed.format.next_packet() {
+            Ok(pkt) if pkt.track_id() == track_id => {
+                end_ts = end_ts.max(pkt.ts + pkt.dur);
+            }
+            Ok(_) => {}
+            Err(_) => break,
+        }
+    }
+    if end_ts == 0 {
+        return None;
+    }
+    let secs = end_ts as f64 * time_base.numer as f64 / time_base.denom as f64;
+    Some((secs * 1000.0) as u64)
 }
 
 pub struct Player {
@@ -98,11 +163,17 @@ impl Player {
         let file = File::open(&path).with_context(|| format!("Failed to open {:?}", path))?;
         let src = Decoder::new(BufReader::new(file))
             .with_context(|| format!("Unsupported/invalid audio: {:?}", path))?;
-        let dur = src.total_duration().map(|d| d.as_millis() as u64);
+        let duration_ms = src.total_duration()
+            .map(|d| d.as_millis() as u64)
+            .or_else(|| scan_duration_ms(&path))
+            .unwrap_or_else(|| panic!("Cannot determine duration for {:?}", path));
 
+        let (title, artist) = probe_tags(&path);
         let info = TrackInfo {
             path,
-            duration_ms: dur,
+            duration_ms,
+            title,
+            artist,
         };
 
         self.sink.clear();
@@ -138,14 +209,12 @@ impl Player {
 
         let Some(track) = &self.current_track else { return Ok(()) };
 
-        if let Some(dur) = track.info.duration_ms {
-            if to_ms >= dur {
-                self.stop();
-                return Ok(());
-            }
+        if to_ms >= track.info.duration_ms {
+            self.stop();
+            return Ok(());
         }
 
-        let was_playing = track.maybe_last_playback_timestamp.is_some();
+        let was_playing = track.last_playback_timestamp.is_some();
         self.sink.try_seek(Duration::from_millis(to_ms)).map_err(|e| anyhow::anyhow!("{e}"))?;
 
         if let Some(track) = &mut self.current_track {
