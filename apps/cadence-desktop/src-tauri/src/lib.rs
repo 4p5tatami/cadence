@@ -1,17 +1,19 @@
-use cadence_core::{Player, TrackInfo};
+mod websocket;
+
+use cadence_core::{Library, LibraryRecord, Player, TrackInfo, TrackRecord};
 use serde::Serialize;
 use std::path::PathBuf;
 use std::sync::mpsc;
-use tauri::State;
+use tauri::{Manager, State};
 
-enum PlayerMessage {
+pub(crate) enum PlayerMessage {
     Play(PathBuf, mpsc::SyncSender<Result<TrackInfo, String>>),
     Pause,
     Resume,
     Stop,
     Advance(i64, mpsc::SyncSender<Result<(), String>>),
     Seek(u64, mpsc::SyncSender<Result<(), String>>),
-    Status(mpsc::SyncSender<StatusResponse>),
+    Status(mpsc::SyncSender<Option<StatusResponse>>),
 }
 
 struct PlayerHandle {
@@ -22,11 +24,13 @@ struct PlayerHandle {
 unsafe impl Sync for PlayerHandle {}
 
 #[derive(Serialize)]
-struct StatusResponse {
-    path: Option<String>,
-    duration_ms: Option<u64>,
-    position_ms: u64,
-    paused: bool,
+pub(crate) struct StatusResponse {
+    pub path: String,
+    pub duration_ms: u64,
+    pub position_ms: u64,
+    pub paused: bool,
+    pub title: Option<String>,
+    pub artist: Option<String>,
 }
 
 fn spawn_player_thread() -> mpsc::Sender<PlayerMessage> {
@@ -59,17 +63,15 @@ fn spawn_player_thread() -> mpsc::Sender<PlayerMessage> {
                     reply.send(result).ok();
                 }
                 PlayerMessage::Status(reply) => {
-                    let position_ms = player.current_position_ms();
-                    let paused = player
-                        .current_track()
-                        .map(|t| t.maybe_last_playback_timestamp.is_none())
-                        .unwrap_or(false);
-                    reply.send(StatusResponse {
-                        path: player.current_track().map(|t| t.info.path.to_string_lossy().into_owned()),
-                        duration_ms: player.current_track().and_then(|t| t.info.duration_ms),
-                        position_ms,
-                        paused,
-                    }).ok();
+                    let status = player.current_track().map(|track| StatusResponse {
+                        path: track.info.path.to_string_lossy().into_owned(),
+                        duration_ms: track.info.duration_ms,
+                        position_ms: player.current_position_ms(),
+                        paused: track.last_playback_timestamp.is_none(),
+                        title: track.info.title.clone(),
+                        artist: track.info.artist.clone(),
+                    });
+                    reply.send(status).ok();
                 }
             }
         }
@@ -115,25 +117,70 @@ fn seek(to_ms: u64, handle: State<PlayerHandle>) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn status(handle: State<PlayerHandle>) -> StatusResponse {
+fn status(handle: State<PlayerHandle>) -> Option<StatusResponse> {
     let (tx, rx) = mpsc::sync_channel(1);
     handle.tx.send(PlayerMessage::Status(tx)).ok();
-    rx.recv().unwrap_or(StatusResponse {
-        path: None,
-        duration_ms: None,
-        position_ms: 0,
-        paused: false,
-    })
+    rx.recv().ok().flatten()
+}
+
+#[tauri::command]
+fn ws_address() -> String {
+    // Determine the local LAN IP by routing toward an external address.
+    // No packet is actually sent — UDP connect just sets the local address.
+    let ip = (|| -> Option<String> {
+        let socket = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+        socket.connect("8.8.8.8:80").ok()?;
+        Some(socket.local_addr().ok()?.ip().to_string())
+    })()
+    .unwrap_or_else(|| "localhost".to_string());
+
+    format!("ws://{}:7878", ip)
+}
+
+#[tauri::command]
+fn index_library(path: String, library: State<Library>) -> Result<usize, String> {
+    library.index_directory(std::path::Path::new(&path))
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn search_tracks(query: String, library: State<Library>) -> Result<Vec<TrackRecord>, String> {
+    library.search(&query).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn list_libraries(library: State<Library>) -> Result<Vec<LibraryRecord>, String> {
+    library.list_libraries().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn delete_library(id: i64, library: State<Library>) -> Result<(), String> {
+    library.delete_library(id).map_err(|e| e.to_string())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let player_tx = spawn_player_thread();
+
+    // Spawn the WebSocket server on Tauri's async runtime.
+    tauri::async_runtime::spawn(websocket::serve(player_tx.clone()));
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
-        .manage(PlayerHandle { tx: spawn_player_thread() })
+        .setup(|app| {
+            let db_path = app.path().app_data_dir()
+                .expect("Failed to get app data dir")
+                .join("cadence.db");
+            let library = Library::open(&db_path)
+                .expect("Failed to open library database");
+            app.manage(library);
+            Ok(())
+        })
+        .manage(PlayerHandle { tx: player_tx })
         .invoke_handler(tauri::generate_handler![
-            play, pause, resume, stop, advance, seek, status
+            play, pause, resume, stop, advance, seek, status, ws_address,
+            index_library, search_tracks, list_libraries, delete_library
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

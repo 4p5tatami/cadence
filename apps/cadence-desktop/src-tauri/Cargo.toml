@@ -24,5 +24,7 @@ tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 cadence-core = { path = "../../../core/cadence-core" }
-anyhow = "1"
+tokio = { version = "1", features = ["time", "macros"] }
+tokio-tungstenite = "0.24"
+futures-util = "0.3"
 

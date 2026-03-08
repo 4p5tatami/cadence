@@ -2,10 +2,12 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
 interface StatusResponse {
-    path: string | null;
-    duration_ms: number | null;
+    path: string;
+    duration_ms: number;
     position_ms: number;
     paused: boolean;
+    title: string | null;
+    artist: string | null;
 }
 
 export function usePlayback() {
@@ -20,30 +22,44 @@ export function usePlayback() {
     const [durationMs, setDurationMs] = useState(0);
     const [isPaused, setIsPaused] = useState(true);
     const [isAnyTrackActive, setIsAnyTrackActive] = useState(false);
-    const [isDragging, setIsDragging] = useState(false);
     const [trackPath, setTrackPath] = useState<string | null>(null);
+    const [trackTitle, setTrackTitle] = useState<string | null>(null);
+    const [trackArtist, setTrackArtist] = useState<string | null>(null);
 
     // Polls backend and resets the extrapolation anchor.
     const poll = useCallback(async () => {
-        const status = await invoke<StatusResponse>("status");
-        // Don't clobber the anchor while the user is scrubbing.
-        if (dragRef.current === null) {
-            startRef.current = {
-                positionMs: status.position_ms,
-                wallClock: Date.now(),
-                playing: !status.paused && status.path !== null,
-            };
+        const status = await invoke<StatusResponse | null>("status");
+        if (status === null) {
+            if (dragRef.current === null) {
+                startRef.current = { positionMs: 0, wallClock: Date.now(), playing: false };
+            }
+            setIsPaused(true);
+            setIsAnyTrackActive(false);
+            setTrackPath(null);
+            setTrackTitle(null);
+            setTrackArtist(null);
+            setDurationMs(0);
+        } else {
+            if (dragRef.current === null) {
+                startRef.current = {
+                    positionMs: status.position_ms,
+                    wallClock: Date.now(),
+                    playing: !status.paused,
+                };
+            }
+            setIsPaused(status.paused);
+            setIsAnyTrackActive(true);
+            setTrackPath(status.path);
+            setTrackTitle(status.title);
+            setTrackArtist(status.artist);
+            setDurationMs(status.duration_ms);
         }
-        setIsPaused(status.paused || status.path === null);
-        setIsAnyTrackActive(status.path !== null);
-        setTrackPath(status.path);
-        setDurationMs(status.duration_ms ?? 0);
     }, []);
 
     // Poll every second.
     useEffect(() => {
-        poll();
-        const id = setInterval(poll, 1000);
+        void poll();
+        const id = setInterval(() => { void poll(); }, 1000);
         return () => clearInterval(id);
     }, [poll]);
 
@@ -67,16 +83,14 @@ export function usePlayback() {
     // Called on every thumb move — freezes the display at the drag position.
     const onDragChange = useCallback((ms: number) => {
         dragRef.current = ms;
-        setIsDragging(true);
     }, []);
 
     // Called on pointer-up — seeks backend and restores normal extrapolation.
     const onDragCommit = useCallback(async (ms: number) => {
         dragRef.current = null;
-        setIsDragging(false);
         startRef.current = { positionMs: ms, wallClock: Date.now(), playing: startRef.current.playing };
         await invoke("seek", { toMs: ms });
     }, []);
 
-    return { displayMs, durationMs, paused: isPaused, active: isAnyTrackActive, isDragging, trackPath, onDragChange, onDragCommit, sync: poll };
+    return { displayMs, durationMs, paused: isPaused, active: isAnyTrackActive, trackPath, trackTitle, trackArtist, onDragChange, onDragCommit, sync: poll };
 }
