@@ -1,0 +1,16 @@
+{
+  "expo": {
+    "name": "Cadence",
+    "slug": "cadence-mobile",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "scheme": "cadence",
+    "userInterfaceStyle": "dark",
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#000000"
+      }
+    },
+    "plugins": ["expo-router"]
+  }
+}
