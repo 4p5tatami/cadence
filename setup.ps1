@@ -20,7 +20,7 @@ function Test-Command($command) {
 }
 
 # Step 1: Check Node.js
-Write-Host "[1/3] Checking Node.js..." -ForegroundColor Yellow
+Write-Host "[1/4] Checking Node.js..." -ForegroundColor Yellow
 
 if (Test-Command node) {
     $nodeVersion = (node --version).TrimStart('v').Split('.')[0]
@@ -43,7 +43,7 @@ Write-Host "✓ npm $(npm --version) is available" -ForegroundColor Green
 Write-Host ""
 
 # Step 2: Check Rust
-Write-Host "[2/3] Checking Rust..." -ForegroundColor Yellow
+Write-Host "[2/4] Checking Rust..." -ForegroundColor Yellow
 
 if (Test-Command rustc) {
     Write-Host "✓ Rust $(rustc --version) is already installed" -ForegroundColor Green
