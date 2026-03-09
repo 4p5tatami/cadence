@@ -1,4 +1,4 @@
-use std::sync::mpsc;
+use std::sync::{mpsc, Arc};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use futures_util::{SinkExt, StreamExt};
@@ -7,23 +7,33 @@ use tokio::net::TcpListener;
 use tokio::sync::broadcast;
 use tokio_tungstenite::tungstenite::Message;
 
+use cadence_core::{Library, TrackRecord};
 use crate::{PlayerMessage, StatusResponse};
 
-/// Message sent from server to clients on every state change.
+/// State broadcast sent to all clients every 500 ms.
 #[derive(Serialize)]
-struct ServerMsg<'a> {
+struct StateMsg<'a> {
     #[serde(rename = "type")]
     msg_type: &'static str,
     track_path: &'a str,
+    title: Option<&'a str>,
+    artist: Option<&'a str>,
     duration_ms: u64,
     position_ms: u64,
     playing: bool,
-    /// Wall-clock ms when this snapshot was taken.
-    /// Receivers use: position_ms + (now - snapshot_at_ms) to extrapolate current position.
     snapshot_at_ms: u64,
 }
 
-/// Commands sent from clients to server.
+/// Search results sent only to the requesting client.
+#[derive(Serialize)]
+struct SearchResultsMsg {
+    #[serde(rename = "type")]
+    msg_type: &'static str,
+    query: String,
+    tracks: Vec<TrackRecord>,
+}
+
+/// Commands sent from clients to the server.
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ClientMsg {
@@ -32,6 +42,7 @@ enum ClientMsg {
     Resume,
     Stop,
     Seek { to_ms: u64 },
+    Search { query: String },
 }
 
 fn now_ms() -> u64 {
@@ -41,10 +52,12 @@ fn now_ms() -> u64 {
         .as_millis() as u64
 }
 
-fn broadcast_json(status: &StatusResponse) -> String {
-    let msg = ServerMsg {
+fn state_json(status: &StatusResponse) -> String {
+    let msg = StateMsg {
         msg_type: "state",
         track_path: &status.path,
+        title: status.title.as_deref(),
+        artist: status.artist.as_deref(),
         duration_ms: status.duration_ms,
         position_ms: status.position_ms,
         playing: !status.paused,
@@ -53,38 +66,23 @@ fn broadcast_json(status: &StatusResponse) -> String {
     serde_json::to_string(&msg).unwrap()
 }
 
-fn handle_client_msg(text: &str, player_tx: &mpsc::Sender<PlayerMessage>) {
-    let Ok(msg) = serde_json::from_str::<ClientMsg>(text) else { return };
-    match msg {
-        ClientMsg::Pause  => { player_tx.send(PlayerMessage::Pause).ok(); }
-        ClientMsg::Resume => { player_tx.send(PlayerMessage::Resume).ok(); }
-        ClientMsg::Stop   => { player_tx.send(PlayerMessage::Stop).ok(); }
-        ClientMsg::Seek { to_ms } => {
-            let (tx, _) = mpsc::sync_channel(1);
-            player_tx.send(PlayerMessage::Seek(to_ms, tx)).ok();
-        }
-        ClientMsg::Play { path } => {
-            let (tx, _) = mpsc::sync_channel(1);
-            player_tx.send(PlayerMessage::Play(path.into(), tx)).ok();
-        }
-    }
-}
-
-pub async fn serve(player_tx: mpsc::Sender<PlayerMessage>) {
+pub async fn serve(
+    player_tx: mpsc::Sender<PlayerMessage>,
+    library: Arc<Library>,
+) {
     let listener = TcpListener::bind("0.0.0.0:7878").await
         .expect("Failed to bind WS server on port 7878");
 
-    // Broadcast channel — all connected client tasks subscribe to this.
     let (broadcast_tx, _) = broadcast::channel::<String>(32);
-    let broadcast_tx = std::sync::Arc::new(broadcast_tx);
+    let broadcast_tx = Arc::new(broadcast_tx);
 
-    // Poll player every 500ms and broadcast current state to all clients.
+    // Poll player every 500 ms and broadcast state to all clients.
     {
         let ptx = player_tx.clone();
         let btx = broadcast_tx.clone();
         tokio::spawn(async move {
             loop {
-                tokio::time::sleep(Duration::from_millis(500)).await;
+                tokio::time::sleep(Duration::from_millis(100)).await;
                 let ptx2 = ptx.clone();
                 let result = tokio::task::spawn_blocking(move || {
                     let (tx, rx) = mpsc::sync_channel(1);
@@ -92,16 +90,18 @@ pub async fn serve(player_tx: mpsc::Sender<PlayerMessage>) {
                     rx.recv().ok().flatten()
                 }).await;
 
-                if let Ok(Some(status)) = result {
-                    btx.send(broadcast_json(&status)).ok();
+                match result {
+                    Ok(Some(status)) => { btx.send(state_json(&status)).ok(); }
+                    Ok(None) => { btx.send(r#"{"type":"stopped"}"#.to_string()).ok(); }
+                    _ => {}
                 }
             }
         });
     }
 
-    // Accept connections.
     while let Ok((stream, _addr)) = listener.accept().await {
         let ptx = player_tx.clone();
+        let lib = Arc::clone(&library);
         let mut brx = broadcast_tx.subscribe();
 
         tokio::spawn(async move {
@@ -110,19 +110,46 @@ pub async fn serve(player_tx: mpsc::Sender<PlayerMessage>) {
 
             loop {
                 tokio::select! {
-                    // Incoming message from this client.
                     msg = read.next() => {
                         match msg {
-                            Some(Ok(Message::Text(text))) => handle_client_msg(&text, &ptx),
+                            Some(Ok(Message::Text(text))) => {
+                                let Ok(cmd) = serde_json::from_str::<ClientMsg>(&text) else { continue };
+                                match cmd {
+                                    ClientMsg::Pause  => { ptx.send(PlayerMessage::Pause).ok(); }
+                                    ClientMsg::Resume => { ptx.send(PlayerMessage::Resume).ok(); }
+                                    ClientMsg::Stop   => { ptx.send(PlayerMessage::Stop).ok(); }
+                                    ClientMsg::Seek { to_ms } => {
+                                        let (tx, _) = mpsc::sync_channel(1);
+                                        ptx.send(PlayerMessage::Seek(to_ms, tx)).ok();
+                                    }
+                                    ClientMsg::Play { path } => {
+                                        let (tx, _) = mpsc::sync_channel(1);
+                                        ptx.send(PlayerMessage::Play(path.into(), tx)).ok();
+                                    }
+                                    ClientMsg::Search { query } => {
+                                        let lib2 = Arc::clone(&lib);
+                                        let q = query.clone();
+                                        let tracks = tokio::task::spawn_blocking(move || {
+                                            lib2.search(&q).unwrap_or_default()
+                                        }).await.unwrap_or_default();
+
+                                        let reply = serde_json::to_string(&SearchResultsMsg {
+                                            msg_type: "search_results",
+                                            query,
+                                            tracks,
+                                        }).unwrap();
+                                        if write.send(Message::Text(reply)).await.is_err() { break; }
+                                    }
+                                }
+                            }
                             Some(Ok(Message::Close(_))) | None => break,
                             _ => {}
                         }
                     }
-                    // Outgoing broadcast to this client.
                     state = brx.recv() => {
                         match state {
                             Ok(s) => { if write.send(Message::Text(s)).await.is_err() { break; } }
-                            Err(broadcast::error::RecvError::Lagged(_)) => {} // skip, not fatal
+                            Err(broadcast::error::RecvError::Lagged(_)) => {}
                             Err(_) => break,
                         }
                     }
