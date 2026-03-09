@@ -55,25 +55,41 @@ if (Test-Command rustc) {
 }
 Write-Host ""
 
-# Step 3: Install npm dependencies
+# Step 3: Install desktop npm dependencies
 Write-Host "[3/3] Installing npm dependencies..." -ForegroundColor Yellow
+
+$rootDir = Get-Location
 
 Set-Location apps\cadence-desktop
 npm install
+Write-Host "✓ Desktop dependencies installed" -ForegroundColor Green
+Write-Host ""
 
-Write-Host "✓ npm dependencies installed" -ForegroundColor Green
+# Step 4: Install mobile npm dependencies
+Write-Host "[4/4] Installing mobile app dependencies..." -ForegroundColor Yellow
+
+Set-Location $rootDir\apps\cadence-mobile
+npm install --legacy-peer-deps
+Write-Host "✓ Mobile dependencies installed" -ForegroundColor Green
 Write-Host ""
 
 # All done!
+Set-Location $rootDir
 Write-Host "==================================" -ForegroundColor Green
 Write-Host "✓ Setup complete!" -ForegroundColor Green
 Write-Host "==================================" -ForegroundColor Green
 Write-Host ""
-Write-Host "To run the app:"
+Write-Host "To run the desktop app:"
 Write-Host "  cd apps\cadence-desktop"
 Write-Host "  npm run tauri dev"
+Write-Host ""
+Write-Host "To run the Android companion app:"
+Write-Host "  cd apps\cadence-mobile"
+Write-Host "  npx expo start --clear"
+Write-Host "  (then scan the QR code with Expo Go on your phone)"
 Write-Host ""
 Write-Host "Note: Make sure you have:" -ForegroundColor Yellow
 Write-Host "  - Visual Studio Build Tools (C++ workload)" -ForegroundColor Yellow
 Write-Host "  - WebView2 (usually pre-installed on Windows 10/11)" -ForegroundColor Yellow
+Write-Host "  - Expo Go (SDK 54) installed on your Android device" -ForegroundColor Yellow
 Write-Host ""

@@ -100,8 +100,8 @@ fn scan_duration_ms(path: &std::path::Path) -> Option<u64> {
     let track = probed.format.default_track()?;
 
     // Fast path: n_frames already known from the container/header.
-    if let (Some(n_frames), Some(sr)) = (track.codec_params.n_frames, track.codec_params.sample_rate) {
-        return Some(n_frames * 1000 / sr as u64);
+    if let (Some(n_frames), Some(sample_rate)) = (track.codec_params.n_frames, track.codec_params.sample_rate) {
+        return Some(n_frames * 1000 / sample_rate as u64);
     }
 
     // Slow path: scan every packet and accumulate the highest end-timestamp.

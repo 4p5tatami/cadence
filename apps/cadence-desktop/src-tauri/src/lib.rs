@@ -3,7 +3,7 @@ mod websocket;
 use cadence_core::{Library, LibraryRecord, Player, TrackInfo, TrackRecord};
 use serde::Serialize;
 use std::path::PathBuf;
-use std::sync::mpsc;
+use std::sync::{mpsc, Arc};
 use tauri::{Manager, State};
 
 pub(crate) enum PlayerMessage {
@@ -138,23 +138,23 @@ fn ws_address() -> String {
 }
 
 #[tauri::command]
-fn index_library(path: String, library: State<Library>) -> Result<usize, String> {
+fn index_library(path: String, library: State<Arc<Library>>) -> Result<usize, String> {
     library.index_directory(std::path::Path::new(&path))
         .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-fn search_tracks(query: String, library: State<Library>) -> Result<Vec<TrackRecord>, String> {
+fn search_tracks(query: String, library: State<Arc<Library>>) -> Result<Vec<TrackRecord>, String> {
     library.search(&query).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-fn list_libraries(library: State<Library>) -> Result<Vec<LibraryRecord>, String> {
+fn list_libraries(library: State<Arc<Library>>) -> Result<Vec<LibraryRecord>, String> {
     library.list_libraries().map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-fn delete_library(id: i64, library: State<Library>) -> Result<(), String> {
+fn delete_library(id: i64, library: State<Arc<Library>>) -> Result<(), String> {
     library.delete_library(id).map_err(|e| e.to_string())
 }
 
@@ -162,8 +162,13 @@ fn delete_library(id: i64, library: State<Library>) -> Result<(), String> {
 pub fn run() {
     let player_tx = spawn_player_thread();
 
-    // Spawn the WebSocket server on Tauri's async runtime.
-    tauri::async_runtime::spawn(websocket::serve(player_tx.clone()));
+    // Library is created in setup (needs app data dir), passed to WS server via oneshot.
+    let (lib_tx, lib_rx) = tokio::sync::oneshot::channel::<Arc<Library>>();
+    let player_tx_for_ws = player_tx.clone();
+    tauri::async_runtime::spawn(async move {
+        let Ok(library) = lib_rx.await else { return };
+        websocket::serve(player_tx_for_ws, library).await;
+    });
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
@@ -172,8 +177,9 @@ pub fn run() {
             let db_path = app.path().app_data_dir()
                 .expect("Failed to get app data dir")
                 .join("cadence.db");
-            let library = Library::open(&db_path)
-                .expect("Failed to open library database");
+            let library = Arc::new(Library::open(&db_path)
+                .expect("Failed to open library database"));
+            lib_tx.send(Arc::clone(&library)).ok();
             app.manage(library);
             Ok(())
         })

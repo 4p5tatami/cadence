@@ -151,18 +151,18 @@ function App() {
                 </div>
             )}
             {active && (
-                <div style={{ display: "flex", justifyContent: "center", gap: "0.5rem", marginTop: "1rem" }}>
+                <div style={{ display: "flex", justifyContent: "center", gap: "0.5rem", marginTop: "0.7rem" }}>
                     <Button variant={"outline"} onClick={() => handleAdvance(-10)}>-10s</Button>
                     <Button variant={"outline"} onClick={handlePause}>{paused ? "Resume" : "Pause"}</Button>
                     <Button variant={"outline"} onClick={() => handleAdvance(10)}>+10s</Button>
                 </div>
             )}
             {active && (
-                <div style={{ display: "flex", justifyContent: "center", gap: "0.5rem", marginTop: "1rem" }}>
+                <div style={{ display: "flex", justifyContent: "center", gap: "0.5rem", marginTop: "0.7rem" }}>
                     <Button variant={"outline"} onClick={handleStop}>Stop</Button>
                 </div>
             )}
-            {wsAddr && <p style={{ position: "fixed", bottom: "1rem", left: "1rem", margin: 0, color: "#888", fontSize: "0.8rem" }}>websocket listening on {wsAddr}</p>}
+            {wsAddr && <p style={{ position: "fixed", bottom: "1rem", left: "1rem", margin: 0, color: "#A1A8B3", fontSize: "0.85rem" }}>websocket listening on {wsAddr}</p>}
         </main>
     );
 }
