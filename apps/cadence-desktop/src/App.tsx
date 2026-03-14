@@ -75,9 +75,13 @@ function App() {
         await sync();
     };
 
-    const handleAdvance = async (seconds: number) => {
-        await invoke("advance", { deltaMs: seconds * 1000 });
+    const handlePrevious = async () => {
+        await invoke("previous");
     };
+
+    const handleNext = async () => {
+        await invoke("next");
+    }
 
     if (view === "libraries") {
         return <LibraryManager onBack={() => setView("main")} />;
@@ -111,6 +115,12 @@ function App() {
                     style={{ flex: 1, padding: "0.4rem 0.6rem", fontSize: "0.9rem", border: "1px solid #333", borderRadius: "4px", background: "transparent", color: "inherit", outline: "none" }}
                 />
             </div>
+
+            {!active && results.length == 0 && (
+                <div style={{ display: "flex", gap: "0.5rem", marginTop: "0.7rem" }}>
+                    <Button variant={"outline"} onClick={() => handleNext()}>Play Something</Button>
+                </div>
+            )}
 
             {results.length > 0 && (
                 <ul style={{ listStyle: "none", padding: 0, marginTop: "0.75rem", maxHeight: "40vh", overflowY: "auto" }}>
@@ -152,9 +162,9 @@ function App() {
             )}
             {active && (
                 <div style={{ display: "flex", justifyContent: "center", gap: "0.5rem", marginTop: "0.7rem" }}>
-                    <Button variant={"outline"} onClick={() => handleAdvance(-10)}>-10s</Button>
+                    <Button variant={"outline"} onClick={() => handlePrevious()}>Prev</Button>
                     <Button variant={"outline"} onClick={handlePause}>{paused ? "Resume" : "Pause"}</Button>
-                    <Button variant={"outline"} onClick={() => handleAdvance(10)}>+10s</Button>
+                    <Button variant={"outline"} onClick={() => handleNext()}>Next</Button>
                 </div>
             )}
             {active && (

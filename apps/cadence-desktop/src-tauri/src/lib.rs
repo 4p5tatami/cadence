@@ -11,7 +11,8 @@ pub(crate) enum PlayerMessage {
     Pause,
     Resume,
     Stop,
-    Advance(i64, mpsc::SyncSender<Result<(), String>>),
+    Previous,
+    Next,
     Seek(u64, mpsc::SyncSender<Result<(), String>>),
     Status(mpsc::SyncSender<Option<StatusResponse>>),
 }
@@ -33,15 +34,25 @@ pub(crate) struct StatusResponse {
     pub artist: Option<String>,
 }
 
-fn spawn_player_thread() -> mpsc::Sender<PlayerMessage> {
+fn spawn_player_thread(lib_rx: mpsc::Receiver<Arc<Library>>) -> mpsc::Sender<PlayerMessage> {
     let (tx, rx) = mpsc::channel();
 
     std::thread::spawn(move || {
+        let library = lib_rx.recv().expect("Library init failed");
         let mut player = Player::new().expect("Failed to create player");
+        // history[history_pos] is always the currently playing track (when non-empty).
+        let mut history: Vec<PathBuf> = Vec::new();
+        let mut history_pos: usize = 0;
 
         while let Ok(cmd) = rx.recv() {
             match cmd {
                 PlayerMessage::Play(path, reply) => {
+                    // Truncate any forward history, then append the new track.
+                    if !history.is_empty() {
+                        history.truncate(history_pos + 1);
+                    }
+                    history.push(path.clone());
+                    history_pos = history.len() - 1;
                     let result = player.load_and_play(path).map_err(|e| e.to_string());
                     reply.send(result).ok();
                 }
@@ -54,15 +65,43 @@ fn spawn_player_thread() -> mpsc::Sender<PlayerMessage> {
                 PlayerMessage::Stop => {
                     player.stop();
                 }
-                PlayerMessage::Advance(delta_ms, reply) => {
-                    let result = player.advance_or_rewind(delta_ms).map_err(|e| e.to_string());
-                    reply.send(result).ok();
+                PlayerMessage::Previous => {
+                    if history_pos > 0 {
+                        history_pos -= 1;
+                        player.load_and_play(history[history_pos].clone()).ok();
+                    }
+                }
+                PlayerMessage::Next => {
+                    if history_pos + 1 < history.len() {
+                        // Replay forward history.
+                        history_pos += 1;
+                        player.load_and_play(history[history_pos].clone()).ok();
+                    } else {
+                        // Pick a random track from the library, excluding the current one.
+                        let current = player.current_track().map(|t| t.info.path.clone());
+                        if let Ok(paths) = library.all_track_paths() {
+                            use rand::seq::SliceRandom;
+                            let candidates: Vec<&PathBuf> = paths.iter()
+                                .filter(|p| Some(*p) != current.as_ref())
+                                .collect();
+                            if let Some(next_path) = candidates.choose(&mut rand::thread_rng()) {
+                                let next_path = (*next_path).clone();
+                                history.push(next_path.clone());
+                                history_pos = history.len() - 1;
+                                player.load_and_play(next_path).ok();
+                            }
+                        }
+                    }
                 }
                 PlayerMessage::Seek(to_ms, reply) => {
                     let result = player.seek(to_ms).map_err(|e| e.to_string());
                     reply.send(result).ok();
                 }
                 PlayerMessage::Status(reply) => {
+                    // Auto-stop when rodio's sink runs dry (track reached EOF).
+                    if player.current_track().is_some() && player.is_finished() {
+                        player.stop();
+                    }
                     let status = player.current_track().map(|track| StatusResponse {
                         path: track.info.path.to_string_lossy().into_owned(),
                         duration_ms: track.info.duration_ms,
@@ -103,10 +142,13 @@ fn stop(handle: State<PlayerHandle>) {
 }
 
 #[tauri::command]
-fn advance(delta_ms: i64, handle: State<PlayerHandle>) -> Result<(), String> {
-    let (tx, rx) = mpsc::sync_channel(1);
-    handle.tx.send(PlayerMessage::Advance(delta_ms, tx)).ok();
-    rx.recv().map_err(|_| "Player thread died".to_string())?
+fn next(handle: State<PlayerHandle>) {
+    handle.tx.send(PlayerMessage::Next).ok();
+}
+
+#[tauri::command]
+fn previous(handle: State<PlayerHandle>) {
+    handle.tx.send(PlayerMessage::Previous).ok();
 }
 
 #[tauri::command]
@@ -160,32 +202,35 @@ fn delete_library(id: i64, library: State<Arc<Library>>) -> Result<(), String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let player_tx = spawn_player_thread();
+    // Library is created in setup (needs app data dir).
+    // Both the player thread and WS server need it — send via separate sync channels.
+    let (player_lib_tx, player_lib_rx) = mpsc::sync_channel::<Arc<Library>>(1);
+    let player_tx = spawn_player_thread(player_lib_rx);
 
-    // Library is created in setup (needs app data dir), passed to WS server via oneshot.
-    let (lib_tx, lib_rx) = tokio::sync::oneshot::channel::<Arc<Library>>();
+    let (ws_lib_tx, ws_lib_rx) = tokio::sync::oneshot::channel::<Arc<Library>>();
     let player_tx_for_ws = player_tx.clone();
     tauri::async_runtime::spawn(async move {
-        let Ok(library) = lib_rx.await else { return };
+        let Ok(library) = ws_lib_rx.await else { return };
         websocket::serve(player_tx_for_ws, library).await;
     });
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
-        .setup(|app| {
+        .setup(move |app| {
             let db_path = app.path().app_data_dir()
                 .expect("Failed to get app data dir")
                 .join("cadence.db");
             let library = Arc::new(Library::open(&db_path)
                 .expect("Failed to open library database"));
-            lib_tx.send(Arc::clone(&library)).ok();
+            player_lib_tx.send(Arc::clone(&library)).ok();
+            ws_lib_tx.send(Arc::clone(&library)).ok();
             app.manage(library);
             Ok(())
         })
         .manage(PlayerHandle { tx: player_tx })
         .invoke_handler(tauri::generate_handler![
-            play, pause, resume, stop, advance, seek, status, ws_address,
+            play, pause, resume, stop, next, previous, seek, status, ws_address,
             index_library, search_tracks, list_libraries, delete_library
         ])
         .run(tauri::generate_context!())
