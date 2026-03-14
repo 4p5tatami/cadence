@@ -204,6 +204,11 @@ impl Player {
         self.current_track = None;
     }
 
+    /// True when the sink has no more samples — i.e. the track finished playing.
+    pub fn is_finished(&self) -> bool {
+        self.sink.empty()
+    }
+
     pub fn seek(&mut self, to_ms: u64) -> Result<()> {
         use std::time::Duration;
 
@@ -222,11 +227,5 @@ impl Player {
         }
 
         Ok(())
-    }
-
-    pub fn advance_or_rewind(&mut self, delta_ms: i64) -> Result<()> {
-        let current = self.current_position_ms() as i64;
-        let target = (current + delta_ms).max(0) as u64;
-        self.seek(target)
     }
 }

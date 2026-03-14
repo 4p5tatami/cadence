@@ -22,13 +22,13 @@ function livePosition(positionMs: number, playing: boolean, snapshotAtMs: number
 }
 
 export default function App() {
-    const [urlInput, setUrlInput] = useState("ws://");
+    const [urlInput, setUrlInput] = useState("");
     const [connectedUrl, setConnectedUrl] = useState<string | null>(null);
     const [query, setQuery] = useState("");
     const [displayMs, setDisplayMs] = useState(0);
     const rafRef = useRef<number>(0);
 
-    const { status, playback, searchResults, search, play, pause, resume, stop, seek } =
+    const { status, playback, searchResults, search, play, pause, resume, stop, next, previous, seek } =
         useDesktopSync(connectedUrl);
     const [barWidth, setBarWidth] = useState(0);
 
@@ -52,6 +52,7 @@ export default function App() {
 
     // ── Connect screen ──────────────────────────────────────────
     if (status !== "connected") {
+        const isConnecting = status === "connecting";
         return (
             <View style={styles.center}>
                 <StatusBar style="light" />
@@ -66,18 +67,29 @@ export default function App() {
                     keyboardType="url"
                     placeholder="ws://192.168.x.x:7878"
                     placeholderTextColor="#555"
+                    editable={!isConnecting}
                 />
                 {status === "error" && (
                     <Text style={styles.error}>Could not connect. Check the address and try again.</Text>
                 )}
-                <Pressable
-                    style={styles.connectBtn}
-                    onPress={() => setConnectedUrl(urlInput.trim())}
-                >
-                    <Text style={styles.connectBtnText}>
-                        {status === "connecting" ? "Connecting…" : "Connect"}
-                    </Text>
-                </Pressable>
+                {isConnecting ? (
+                    <View style={styles.connectingRow}>
+                        <Text style={styles.connectingText}>Connecting…</Text>
+                        <Pressable
+                            style={styles.cancelBtn}
+                            onPress={() => setConnectedUrl(null)}
+                        >
+                            <Text style={styles.cancelBtnText}>Cancel</Text>
+                        </Pressable>
+                    </View>
+                ) : (
+                    <Pressable
+                        style={styles.connectBtn}
+                        onPress={() => setConnectedUrl(urlInput.trim())}
+                    >
+                        <Text style={styles.connectBtnText}>Connect</Text>
+                    </Pressable>
+                )}
             </View>
         );
     }
@@ -159,9 +171,17 @@ export default function App() {
                     </View>
 
                     <View style={styles.controls}>
+                        <Pressable style={styles.ctrlBtn} onPress={previous}>
+                            <Text style={styles.ctrlText}>Prev</Text>
+                        </Pressable>
                         <Pressable style={styles.ctrlBtn} onPress={playback.playing ? pause : resume}>
                             <Text style={styles.ctrlText}>{playback.playing ? "Pause" : "Resume"}</Text>
                         </Pressable>
+                        <Pressable style={styles.ctrlBtn} onPress={next}>
+                            <Text style={styles.ctrlText}>Next</Text>
+                        </Pressable>
+                    </View>
+                    <View style={[styles.controls, {marginTop: 8}]}>
                         <Pressable style={styles.ctrlBtn} onPress={stop}>
                             <Text style={styles.ctrlText}>Stop</Text>
                         </Pressable>
@@ -232,6 +252,27 @@ const styles = StyleSheet.create({
         fontSize: 13,
         marginBottom: 8,
         textAlign: "center",
+    },
+    connectingRow: {
+        marginTop: 8,
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 16,
+    },
+    connectingText: {
+        color: C.muted,
+        fontSize: 15,
+    },
+    cancelBtn: {
+        borderWidth: 1,
+        borderColor: C.border,
+        borderRadius: 8,
+        paddingVertical: 8,
+        paddingHorizontal: 16,
+    },
+    cancelBtnText: {
+        color: C.accent,
+        fontSize: 14,
     },
     connectBtn: {
         marginTop: 8,

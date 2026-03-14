@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection};
 use serde::Serialize;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 const AUDIO_EXTENSIONS: &[&str] = &[
@@ -204,6 +204,17 @@ impl Library {
             .collect();
 
         Ok(tracks)
+    }
+
+    pub fn all_track_paths(&self) -> Result<Vec<PathBuf>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT path FROM tracks")?;
+        let paths = stmt
+            .query_map([], |row| row.get::<_, String>(0))?
+            .filter_map(|r| r.ok())
+            .map(PathBuf::from)
+            .collect();
+        Ok(paths)
     }
 
     pub fn list_libraries(&self) -> Result<Vec<LibraryRecord>> {

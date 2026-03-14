@@ -41,6 +41,8 @@ enum ClientMsg {
     Pause,
     Resume,
     Stop,
+    Next,
+    Previous,
     Seek { to_ms: u64 },
     Search { query: String },
 }
@@ -115,9 +117,11 @@ pub async fn serve(
                             Some(Ok(Message::Text(text))) => {
                                 let Ok(cmd) = serde_json::from_str::<ClientMsg>(&text) else { continue };
                                 match cmd {
-                                    ClientMsg::Pause  => { ptx.send(PlayerMessage::Pause).ok(); }
-                                    ClientMsg::Resume => { ptx.send(PlayerMessage::Resume).ok(); }
-                                    ClientMsg::Stop   => { ptx.send(PlayerMessage::Stop).ok(); }
+                                    ClientMsg::Pause    => { ptx.send(PlayerMessage::Pause).ok(); }
+                                    ClientMsg::Resume   => { ptx.send(PlayerMessage::Resume).ok(); }
+                                    ClientMsg::Stop     => { ptx.send(PlayerMessage::Stop).ok(); }
+                                    ClientMsg::Next     => { ptx.send(PlayerMessage::Next).ok(); }
+                                    ClientMsg::Previous => { ptx.send(PlayerMessage::Previous).ok(); }
                                     ClientMsg::Seek { to_ms } => {
                                         let (tx, _) = mpsc::sync_channel(1);
                                         ptx.send(PlayerMessage::Seek(to_ms, tx)).ok();

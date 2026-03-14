@@ -20,50 +20,96 @@ export interface PlaybackState {
 
 type ConnectionStatus = "disconnected" | "connecting" | "connected" | "error";
 
+const BACKOFF_INITIAL_MS = 1_000;
+const BACKOFF_MAX_MS = 16_000;
+
 export function useDesktopSync(url: string | null) {
     const wsRef = useRef<WebSocket | null>(null);
+    const backoffRef = useRef(BACKOFF_INITIAL_MS);
+    const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const cancelledRef = useRef(false); // true when url changes / component unmounts
+
     const [status, setStatus] = useState<ConnectionStatus>("disconnected");
     const [playback, setPlayback] = useState<PlaybackState | null>(null);
     const [searchResults, setSearchResults] = useState<TrackRecord[]>([]);
 
     useEffect(() => {
-        if (!url) return;
-
-        setStatus("connecting");
-        const ws = new WebSocket(url);
-        wsRef.current = ws;
-
-        ws.onopen = () => setStatus("connected");
-        ws.onerror = () => setStatus("error");
-        ws.onclose = () => {
+        if (!url) {
+            // User explicitly disconnected — clean up and stop retrying.
+            cancelledRef.current = true;
+            clearTimeout(retryTimerRef.current ?? undefined);
+            wsRef.current?.close();
+            wsRef.current = null;
             setStatus("disconnected");
             setPlayback(null);
-            wsRef.current = null;
-        };
+            return;
+        }
 
-        ws.onmessage = (e) => {
-            try {
-                const msg = JSON.parse(e.data as string);
-                if (msg.type === "state") {
-                    setPlayback({
-                        trackPath: msg.track_path,
-                        title: msg.title ?? null,
-                        artist: msg.artist ?? null,
-                        durationMs: msg.duration_ms,
-                        positionMs: msg.position_ms,
-                        playing: msg.playing,
-                        snapshotAtMs: Date.now(), // use client receive time to avoid PC/phone clock skew
-                    });
-                } else if (msg.type === "stopped") {
-                    setPlayback(null);
-                } else if (msg.type === "search_results") {
-                    setSearchResults(msg.tracks ?? []);
+        cancelledRef.current = false;
+        backoffRef.current = BACKOFF_INITIAL_MS;
+
+        function connect() {
+            if (cancelledRef.current) return;
+
+            setStatus("connecting");
+            const ws = new WebSocket(url!);
+            wsRef.current = ws;
+
+            ws.onopen = () => {
+                backoffRef.current = BACKOFF_INITIAL_MS; // reset on success
+                setStatus("connected");
+            };
+
+            ws.onerror = () => {
+                setStatus("error");
+            };
+
+            ws.onclose = () => {
+                wsRef.current = null;
+                setPlayback(null);
+
+                if (cancelledRef.current) {
+                    setStatus("disconnected");
+                    return;
                 }
-            } catch {}
-        };
+
+                // Reconnect with exponential backoff.
+                setStatus("connecting");
+                retryTimerRef.current = setTimeout(() => {
+                    backoffRef.current = Math.min(backoffRef.current * 2, BACKOFF_MAX_MS);
+                    connect();
+                }, backoffRef.current);
+            };
+
+            ws.onmessage = (e) => {
+                try {
+                    const msg = JSON.parse(e.data as string);
+                    if (msg.type === "state") {
+                        setPlayback({
+                            trackPath: msg.track_path,
+                            title: msg.title ?? null,
+                            artist: msg.artist ?? null,
+                            durationMs: msg.duration_ms,
+                            positionMs: msg.position_ms,
+                            playing: msg.playing,
+                            snapshotAtMs: Date.now(), // use client receive time to avoid PC/phone clock skew
+                        });
+                    } else if (msg.type === "stopped") {
+                        setPlayback(null);
+                    } else if (msg.type === "search_results") {
+                        setSearchResults(msg.tracks ?? []);
+                    }
+                } catch {}
+            };
+        }
+
+        connect();
 
         return () => {
-            ws.close();
+            cancelledRef.current = true;
+            clearTimeout(retryTimerRef.current ?? undefined);
+            wsRef.current?.close();
+            wsRef.current = null;
         };
     }, [url]);
 
@@ -85,7 +131,9 @@ export function useDesktopSync(url: string | null) {
     const pause = useCallback(() => send({ type: "pause" }), [send]);
     const resume = useCallback(() => send({ type: "resume" }), [send]);
     const stop = useCallback(() => send({ type: "stop" }), [send]);
+    const next = useCallback(() => send({ type: "next" }), [send]);
+    const previous = useCallback(() => send({ type: "previous" }), [send]);
     const seek = useCallback((toMs: number) => send({ type: "seek", to_ms: toMs }), [send]);
 
-    return { status, playback, searchResults, search, play, pause, resume, stop, seek };
+    return { status, playback, searchResults, search, play, pause, resume, stop, next, previous, seek };
 }
