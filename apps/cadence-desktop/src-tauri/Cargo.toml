@@ -26,6 +26,8 @@ serde_json = "1"
 cadence-core = { path = "../../../core/cadence-core" }
 tokio = { version = "1", features = ["time", "macros"] }
 rand = "0.8"
+mdns-sd = "0.11"
+gethostname = "0.4"
 tokio-tungstenite = "0.24"
 futures-util = "0.3"
 

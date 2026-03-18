@@ -200,6 +200,46 @@ fn delete_library(id: i64, library: State<Arc<Library>>) -> Result<(), String> {
     library.delete_library(id).map_err(|e| e.to_string())
 }
 
+fn local_ipv4() -> Option<std::net::Ipv4Addr> {
+    let socket = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+    socket.connect("8.8.8.8:80").ok()?;
+    match socket.local_addr().ok()?.ip() {
+        std::net::IpAddr::V4(ip) => Some(ip),
+        _ => None,
+    }
+}
+
+fn advertise_mdns() {
+    use mdns_sd::{ServiceDaemon, ServiceInfo};
+
+    let hostname = gethostname::gethostname()
+        .to_string_lossy()
+        .to_string();
+
+    let Some(ip) = local_ipv4() else {
+        eprintln!("mDNS: could not determine local IP, skipping advertisement");
+        return;
+    };
+
+    std::thread::spawn(move || {
+        let Ok(mdns) = ServiceDaemon::new() else { return };
+        let host_name = format!("{}.local.", hostname);
+        let Ok(info) = ServiceInfo::new(
+            "_cadence._tcp.local.",
+            &hostname,
+            &host_name,
+            std::net::IpAddr::V4(ip),
+            7878,
+            None,
+        ) else { return };
+
+        mdns.register(info).ok();
+
+        // Park the thread to keep the daemon (and thus the advertisement) alive.
+        loop { std::thread::sleep(std::time::Duration::from_secs(60)); }
+    });
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Library is created in setup (needs app data dir).
@@ -213,6 +253,8 @@ pub fn run() {
         let Ok(library) = ws_lib_rx.await else { return };
         websocket::serve(player_tx_for_ws, library).await;
     });
+
+    advertise_mdns();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())

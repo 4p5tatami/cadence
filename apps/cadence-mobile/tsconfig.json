@@ -5,6 +5,7 @@
     "jsx": "react-native",
     "paths": {
       "@/*": ["./*"]
-    }
+    },
+    "typeRoots": ["./types", "./node_modules/@types"]
   }
 }

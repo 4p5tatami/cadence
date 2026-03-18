@@ -35,7 +35,7 @@ export function useDesktopSync(url: string | null) {
 
     useEffect(() => {
         if (!url) {
-            // User explicitly disconnected — clean up and stop retrying.
+            // User explicitly disconnected - clean up and stop retrying.
             cancelledRef.current = true;
             clearTimeout(retryTimerRef.current ?? undefined);
             wsRef.current?.close();
@@ -54,14 +54,16 @@ export function useDesktopSync(url: string | null) {
             setStatus("connecting");
             const ws = new WebSocket(url!);
             wsRef.current = ws;
+            let opened = false;
 
             ws.onopen = () => {
+                opened = true;
                 backoffRef.current = BACKOFF_INITIAL_MS; // reset on success
                 setStatus("connected");
             };
 
             ws.onerror = () => {
-                setStatus("error");
+                // onclose will fire immediately after - handled there
             };
 
             ws.onclose = () => {
@@ -73,12 +75,18 @@ export function useDesktopSync(url: string | null) {
                     return;
                 }
 
-                // Reconnect with exponential backoff.
+                if (!opened || backoffRef.current >= BACKOFF_MAX_MS) {
+                    // never connected or backoff time exceeded threshold - just stop trying
+                    setStatus("error");
+                    return;
+                }
+
                 setStatus("connecting");
-                retryTimerRef.current = setTimeout(() => {
-                    backoffRef.current = Math.min(backoffRef.current * 2, BACKOFF_MAX_MS);
-                    connect();
-                }, backoffRef.current);
+                retryTimerRef.current =
+                    setTimeout(() => {
+                        backoffRef.current = Math.min(backoffRef.current * 2, BACKOFF_MAX_MS);
+                        connect();
+                    }, backoffRef.current);
             };
 
             ws.onmessage = (e) => {

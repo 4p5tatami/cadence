@@ -9,8 +9,24 @@
     "android": {
       "adaptiveIcon": {
         "backgroundColor": "#000000"
-      }
+      },
+      "permissions": [
+        "ACCESS_WIFI_STATE",
+        "ACCESS_NETWORK_STATE",
+        "CHANGE_WIFI_MULTICAST_STATE"
+      ],
+      "package": "com.cadence.app"
     },
-    "plugins": ["expo-router"]
+    "plugins": [
+      "expo-router",
+      "expo-dev-client",
+      "expo-asset"
+    ],
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "dbc522e4-8d50-4d76-a73c-ab7183a4af61"
+      }
+    }
   }
 }

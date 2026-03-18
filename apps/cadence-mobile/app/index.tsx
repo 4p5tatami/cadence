@@ -9,6 +9,7 @@ import {
 } from "react-native";
 import { StatusBar } from "expo-status-bar";
 import { useDesktopSync } from "@/hooks/useDesktopSync";
+import { useDiscovery } from "@/hooks/useDiscovery";
 
 function fmt(ms: number) {
     const s = Math.floor(ms / 1000);
@@ -22,8 +23,8 @@ function livePosition(positionMs: number, playing: boolean, snapshotAtMs: number
 }
 
 export default function App() {
-    const [urlInput, setUrlInput] = useState("");
     const [connectedUrl, setConnectedUrl] = useState<string | null>(null);
+    const [errorMsg, setErrorMsg] = useState<string | null>(null);
     const [query, setQuery] = useState("");
     const [displayMs, setDisplayMs] = useState(0);
     const rafRef = useRef<number>(0);
@@ -31,6 +32,25 @@ export default function App() {
     const { status, playback, searchResults, search, play, pause, resume, stop, next, previous, seek } =
         useDesktopSync(connectedUrl);
     const [barWidth, setBarWidth] = useState(0);
+    const devices = useDiscovery();
+
+    // When connection fails, reset so user can retry
+    useEffect(() => {
+        if (status === "error") {
+            setConnectedUrl(null);
+            setErrorMsg("Could not connect to device.");
+        }
+    }, [status]);
+
+    function connectTo(url: string) {
+        setErrorMsg(null);
+        setConnectedUrl(url);
+    }
+
+    function cancelConnect() {
+        setConnectedUrl(null);
+        setErrorMsg(null);
+    }
 
     // Extrapolation loop
     useEffect(() => {
@@ -56,39 +76,43 @@ export default function App() {
         return (
             <View style={styles.center}>
                 <StatusBar style="light" />
-                <Text style={styles.title}>cadence</Text>
-                <Text style={styles.subtitle}>Enter the WebSocket address shown in the desktop app</Text>
-                <TextInput
-                    style={styles.urlInput}
-                    value={urlInput}
-                    onChangeText={setUrlInput}
-                    autoCapitalize="none"
-                    autoCorrect={false}
-                    keyboardType="url"
-                    placeholder="ws://192.168.x.x:7878"
-                    placeholderTextColor="#555"
-                    editable={!isConnecting}
-                />
-                {status === "error" && (
-                    <Text style={styles.error}>Could not connect. Check the address and try again.</Text>
+                <Text style={[styles.title, { marginBottom: 12 }]}>cadence</Text>
+
+                {/* Error message */}
+                {errorMsg && !isConnecting && (
+                    <Text style={styles.error}>{errorMsg}</Text>
                 )}
-                {isConnecting ? (
+
+                {/* Connecting state */}
+                {isConnecting && (
                     <View style={styles.connectingRow}>
                         <Text style={styles.connectingText}>Connecting…</Text>
-                        <Pressable
-                            style={styles.cancelBtn}
-                            onPress={() => setConnectedUrl(null)}
-                        >
+                        <Pressable style={styles.cancelBtn} onPress={cancelConnect}>
                             <Text style={styles.cancelBtnText}>Cancel</Text>
                         </Pressable>
                     </View>
-                ) : (
-                    <Pressable
-                        style={styles.connectBtn}
-                        onPress={() => setConnectedUrl(urlInput.trim())}
-                    >
-                        <Text style={styles.connectBtnText}>Connect</Text>
-                    </Pressable>
+                )}
+
+                {/* Discovered devices */}
+                {devices.length > 0 && !isConnecting && (
+                    <View style={styles.deviceList}>
+                        <Text style={styles.deviceListLabel}>Available devices</Text>
+                        {devices.map((d) => (
+                            <Pressable
+                                key={d.url}
+                                style={styles.deviceRow}
+                                onPress={() => connectTo(d.url)}
+                            >
+                                <Text style={styles.deviceName}>{d.name}</Text>
+                                <Text style={styles.deviceUrl}>{d.url}</Text>
+                            </Pressable>
+                        ))}
+                    </View>
+                )}
+
+                {/* No devices found */}
+                {devices.length === 0 && !isConnecting && (
+                    <Text style={styles.subtitle}>Searching for devices…</Text>
                 )}
             </View>
         );
@@ -102,7 +126,7 @@ export default function App() {
             {/* Header */}
             <View style={styles.header}>
                 <Text style={styles.title}>cadence</Text>
-                <Pressable onPress={() => { setConnectedUrl(null); setQuery(""); }}>
+                <Pressable onPress={() => { setConnectedUrl(null); setErrorMsg(null); setQuery(""); }}>
                     <Text style={styles.disconnect}>Disconnect</Text>
                 </Pressable>
             </View>
@@ -252,6 +276,35 @@ const styles = StyleSheet.create({
         fontSize: 13,
         marginBottom: 8,
         textAlign: "center",
+    },
+    deviceList: {
+        width: "100%",
+        marginBottom: 24,
+    },
+    deviceListLabel: {
+        color: C.muted,
+        fontSize: 12,
+        textTransform: "uppercase",
+        letterSpacing: 1,
+        marginBottom: 8,
+    },
+    deviceRow: {
+        borderWidth: 1,
+        borderColor: C.border,
+        borderRadius: 8,
+        padding: 12,
+        marginBottom: 8,
+        backgroundColor: C.surface,
+    },
+    deviceName: {
+        color: C.accent,
+        fontSize: 15,
+        fontWeight: "600",
+    },
+    deviceUrl: {
+        color: C.muted,
+        fontSize: 12,
+        marginTop: 2,
     },
     connectingRow: {
         marginTop: 8,
