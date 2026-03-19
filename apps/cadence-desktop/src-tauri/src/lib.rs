@@ -13,6 +13,7 @@ pub(crate) enum PlayerMessage {
     Stop,
     Previous,
     Next,
+    SetVolume(f32),
     Seek(u64, mpsc::SyncSender<Result<(), String>>),
     Status(mpsc::SyncSender<Option<StatusResponse>>),
 }
@@ -32,6 +33,7 @@ pub(crate) struct StatusResponse {
     pub paused: bool,
     pub title: Option<String>,
     pub artist: Option<String>,
+    pub volume: f32,
 }
 
 fn spawn_player_thread(lib_rx: mpsc::Receiver<Arc<Library>>) -> mpsc::Sender<PlayerMessage> {
@@ -97,6 +99,9 @@ fn spawn_player_thread(lib_rx: mpsc::Receiver<Arc<Library>>) -> mpsc::Sender<Pla
                     let result = player.seek(to_ms).map_err(|e| e.to_string());
                     reply.send(result).ok();
                 }
+                PlayerMessage::SetVolume(vol) => {
+                    player.set_volume(vol);
+                }
                 PlayerMessage::Status(reply) => {
                     // Auto-stop when rodio's sink runs dry (track reached EOF).
                     if player.current_track().is_some() && player.is_finished() {
@@ -109,6 +114,7 @@ fn spawn_player_thread(lib_rx: mpsc::Receiver<Arc<Library>>) -> mpsc::Sender<Pla
                         paused: track.last_playback_timestamp.is_none(),
                         title: track.info.title.clone(),
                         artist: track.info.artist.clone(),
+                        volume: player.get_volume(),
                     });
                     reply.send(status).ok();
                 }
@@ -156,6 +162,11 @@ fn seek(to_ms: u64, handle: State<PlayerHandle>) -> Result<(), String> {
     let (tx, rx) = mpsc::sync_channel(1);
     handle.tx.send(PlayerMessage::Seek(to_ms, tx)).ok();
     rx.recv().map_err(|_| "Player thread died".to_string())?
+}
+
+#[tauri::command]
+fn set_volume(handle: State<PlayerHandle>, target: f32) {
+    handle.tx.send(PlayerMessage::SetVolume(target)).ok();
 }
 
 #[tauri::command]
@@ -272,7 +283,7 @@ pub fn run() {
         })
         .manage(PlayerHandle { tx: player_tx })
         .invoke_handler(tauri::generate_handler![
-            play, pause, resume, stop, next, previous, seek, status, ws_address,
+            play, pause, resume, stop, next, previous, seek, set_volume, status, ws_address,
             index_library, search_tracks, list_libraries, delete_library
         ])
         .run(tauri::generate_context!())

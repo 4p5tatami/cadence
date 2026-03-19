@@ -8,10 +8,11 @@ interface StatusResponse {
     paused: boolean;
     title: string | null;
     artist: string | null;
+    volume: number;
 }
 
 export function usePlayback() {
-    // Anchor for extrapolation — written by poll, read by rAF. Never in state.
+    // Anchor for extrapolation - written by poll, read by rAF. Never in state.
     const startRef = useRef({ positionMs: 0, wallClock: 0, playing: false });
     // Non-null while the user is dragging the thumb.
     const dragRef = useRef<number | null>(null);
@@ -25,6 +26,7 @@ export function usePlayback() {
     const [trackPath, setTrackPath] = useState<string | null>(null);
     const [trackTitle, setTrackTitle] = useState<string | null>(null);
     const [trackArtist, setTrackArtist] = useState<string | null>(null);
+    const [volume, setVolume] = useState(1.0);
 
     // Polls backend and resets the extrapolation anchor.
     const poll = useCallback(async () => {
@@ -53,6 +55,7 @@ export function usePlayback() {
             setTrackTitle(status.title);
             setTrackArtist(status.artist);
             setDurationMs(status.duration_ms);
+            setVolume(status.volume);
         }
     }, []);
 
@@ -63,7 +66,7 @@ export function usePlayback() {
         return () => clearInterval(id);
     }, [poll]);
 
-    // rAF loop — extrapolates forward from the last anchor at 60fps.
+    // rAF loop, extrapolates forward from the last anchor at 60fps.
     const tick = useCallback(() => {
         if (dragRef.current !== null) {
             setDisplayMs(dragRef.current);
@@ -92,5 +95,5 @@ export function usePlayback() {
         await invoke("seek", { toMs: ms });
     }, []);
 
-    return { displayMs, durationMs, paused: isPaused, active: isAnyTrackActive, trackPath, trackTitle, trackArtist, onDragChange, onDragCommit, sync: poll };
+    return { displayMs, durationMs, paused: isPaused, active: isAnyTrackActive, trackPath, trackTitle, trackArtist, volume, onDragChange, onDragCommit, sync: poll };
 }

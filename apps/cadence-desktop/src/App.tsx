@@ -21,7 +21,7 @@ function fmt(ms: number) {
 }
 
 function App() {
-    const { displayMs, durationMs, paused, active, trackPath, trackTitle, trackArtist, onDragChange, onDragCommit, sync } = usePlayback();
+    const { displayMs, durationMs, paused, active, trackPath, trackTitle, trackArtist, volume, onDragChange, onDragCommit, sync } = usePlayback();
 
     const [view, setView] = useState<"main" | "libraries">("main");
     const [query, setQuery] = useState("");
@@ -82,6 +82,15 @@ function App() {
     const handleNext = async () => {
         await invoke("next");
     }
+
+    // const handleSetVolume = async (vol: number) => {
+    //     await invoke("set_volume", { vol: vol });
+    // }
+    //
+    // const handleStepVolume = async (delta: number) => {
+    //     const target_volume = Math.min(1.0, Math.max(0.0, volume + delta));
+    //     await invoke("set_volume", { target: target_volume });
+    // };
 
     if (view === "libraries") {
         return <LibraryManager onBack={() => setView("main")} />;
@@ -160,6 +169,7 @@ function App() {
                     </div>
                 </div>
             )}
+
             {active && (
                 <div style={{ display: "flex", justifyContent: "center", gap: "0.5rem", marginTop: "0.7rem" }}>
                     <Button variant={"outline"} onClick={() => handlePrevious()}>Prev</Button>
@@ -167,12 +177,30 @@ function App() {
                     <Button variant={"outline"} onClick={() => handleNext()}>Next</Button>
                 </div>
             )}
+
             {active && (
                 <div style={{ display: "flex", justifyContent: "center", gap: "0.5rem", marginTop: "0.7rem" }}>
                     <Button variant={"outline"} onClick={handleStop}>Stop</Button>
                 </div>
             )}
+
             {wsAddr && <p style={{ position: "fixed", bottom: "1rem", left: "1rem", margin: 0, color: "#A1A8B3", fontSize: "0.85rem" }}>websocket listening on {wsAddr}</p>}
+
+            <div style={{ position: "fixed", bottom: "1rem", right: "1rem", display: "flex", flexDirection: "column", alignItems: "center", gap: "0.4rem" }}>
+                <span style={{ color: "#A1A8B3", fontSize: "0.75rem" }}>{Math.round(volume * 100)}%</span>
+                <Slider
+                    orientation="vertical"
+                    value={[volume]}
+                    min={0}
+                    max={1}
+                    step={0.01}
+                    style={{ height: "80px" }}
+                    onValueCommit={([v]) => void invoke("set_volume", { target: v })}
+                    onValueChange={([v]) => void invoke("set_volume", { target: v })}
+                />
+                <span style={{ color: "#A1A8B3", fontSize: "0.75rem" }}>Volume</span>
+            </div>
+
         </main>
     );
 }

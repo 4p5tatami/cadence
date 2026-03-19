@@ -130,6 +130,7 @@ pub struct Player {
     sink: Sink,
     /// Current track state, if any
     current_track: Option<CurrentTrack>,
+    current_volume: f32,
 }
 
 impl Player {
@@ -142,6 +143,7 @@ impl Player {
             _handle: handle,
             sink,
             current_track: None,
+            current_volume: 1.0,
         })
     }
 
@@ -227,5 +229,14 @@ impl Player {
         }
 
         Ok(())
+    }
+
+    pub fn set_volume (&mut self, volume: f32) {
+        self.current_volume = volume.clamp(0.0, 1.0);
+        self.sink.set_volume(self.current_volume);
+    }
+
+    pub fn get_volume(&self) -> f32 {
+        self.current_volume
     }
 }
