@@ -21,7 +21,9 @@ function fmt(ms: number) {
 }
 
 function App() {
-    const { displayMs, durationMs, paused, active, trackPath, trackTitle, trackArtist, onDragChange, onDragCommit, sync } = usePlayback();
+    const { displayMs, durationMs, paused, active, trackPath, trackTitle, trackArtist, mode: playbackMode, onDragChange, onDragCommit, sync } = usePlayback();
+    const [mode, setMode] = useState<"Default" | "Shuffle" | "Replay">("Default");
+    useEffect(() => { if (playbackMode) setMode(playbackMode); }, [playbackMode]);
 
     const [view, setView] = useState<"main" | "libraries">("main");
     const [query, setQuery] = useState("");
@@ -82,6 +84,13 @@ function App() {
     const handleNext = async () => {
         await invoke("next");
     }
+
+    const MODES = ["Default", "Shuffle", "Replay"] as const;
+    const handleCycleMode = async () => {
+        const next = MODES[(MODES.indexOf(mode) + 1) % MODES.length];
+        setMode(next);
+        await invoke("set_mode", { mode: next });
+    };
 
     if (view === "libraries") {
         return <LibraryManager onBack={() => setView("main")} />;
@@ -160,6 +169,7 @@ function App() {
                     </div>
                 </div>
             )}
+
             {active && (
                 <div style={{ display: "flex", justifyContent: "center", gap: "0.5rem", marginTop: "0.7rem" }}>
                     <Button variant={"outline"} onClick={() => handlePrevious()}>Prev</Button>
@@ -167,12 +177,19 @@ function App() {
                     <Button variant={"outline"} onClick={() => handleNext()}>Next</Button>
                 </div>
             )}
+
             {active && (
                 <div style={{ display: "flex", justifyContent: "center", gap: "0.5rem", marginTop: "0.7rem" }}>
                     <Button variant={"outline"} onClick={handleStop}>Stop</Button>
                 </div>
             )}
+
+            <div style={{ display: "flex", justifyContent: "right" }}>
+                <Button variant={"outline"} onClick={handleCycleMode}>Mode: {mode}</Button>
+            </div>
+
             {wsAddr && <p style={{ position: "fixed", bottom: "1rem", left: "1rem", margin: 0, color: "#A1A8B3", fontSize: "0.85rem" }}>websocket listening on {wsAddr}</p>}
+
         </main>
     );
 }

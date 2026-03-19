@@ -3,6 +3,7 @@ use rusqlite::{params, Connection};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use crate::get_tagged_file;
 
 const AUDIO_EXTENSIONS: &[&str] = &[
     "mp3", "flac", "ogg", "wav", "aac", "m4a", "opus", "wv", "ape",
@@ -55,7 +56,7 @@ impl Library {
                 artist_id   INTEGER NOT NULL REFERENCES artists(id),
                 duration_ms INTEGER NOT NULL
             );
-            CREATE VIRTUAL TABLE IF NOT EXISTS tracks_fts USING fts5 (title, artist);
+            CREATE VIRTUAL TABLE IF NOT EXISTS tracks_fts USING fts5 (title, artist, filename);
         ")?;
 
         // Ensure the sentinel artist always exists.
@@ -118,12 +119,15 @@ impl Library {
 
             let (title, artist, duration_ms) = probe_track(path);
 
+            let filename = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("")
+                .to_string();
+
             // Filename fallback for title.
             let title = title.unwrap_or_else(|| {
-                path.file_stem()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("Unknown Track")
-                    .to_string()
+                if filename.is_empty() { "Unknown Track".to_string() } else { filename.clone() }
             });
             let artist = artist.unwrap_or_else(|| UNKNOWN_ARTIST.to_string());
 
@@ -153,8 +157,8 @@ impl Library {
             if rows > 0 {
                 let track_id = conn.last_insert_rowid();
                 conn.execute(
-                    "INSERT INTO tracks_fts(rowid, title, artist) VALUES (?1, ?2, ?3)",
-                    params![track_id, title, artist],
+                    "INSERT INTO tracks_fts(rowid, title, artist, filename) VALUES (?1, ?2, ?3, ?4)",
+                    params![track_id, title, artist, filename],
                 )?;
                 count += 1;
             }
@@ -253,9 +257,8 @@ impl Library {
 fn probe_track(path: &Path) -> (Option<String>, Option<String>, u64) {
     use lofty::prelude::*;
 
-    let Some(tagged) = lofty::probe::Probe::open(path).ok()
-        .and_then(|p| p.guess_file_type().ok())
-        .and_then(|p| p.read().ok())
+    let Some(tagged) = 
+        get_tagged_file(path)
     else {
         return (None, None, 0);
     };

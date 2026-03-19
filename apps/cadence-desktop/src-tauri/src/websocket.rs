@@ -7,7 +7,7 @@ use tokio::net::TcpListener;
 use tokio::sync::broadcast;
 use tokio_tungstenite::tungstenite::Message;
 
-use cadence_core::{Library, TrackRecord};
+use cadence_core::{Library, PlayerMode, TrackRecord};
 use crate::{PlayerMessage, StatusResponse};
 
 /// State broadcast sent to all clients every 500 ms.
@@ -22,6 +22,7 @@ struct StateMsg<'a> {
     position_ms: u64,
     playing: bool,
     snapshot_at_ms: u64,
+    mode: &'a PlayerMode,
 }
 
 /// Search results sent only to the requesting client.
@@ -45,6 +46,7 @@ enum ClientMsg {
     Previous,
     Seek { to_ms: u64 },
     Search { query: String },
+    SetMode { mode: PlayerMode },
 }
 
 fn now_ms() -> u64 {
@@ -64,6 +66,7 @@ fn state_json(status: &StatusResponse) -> String {
         position_ms: status.position_ms,
         playing: !status.paused,
         snapshot_at_ms: now_ms(),
+        mode: &status.mode,
     };
     serde_json::to_string(&msg).unwrap()
 }
@@ -143,6 +146,9 @@ pub async fn serve(
                                             tracks,
                                         }).unwrap();
                                         if write.send(Message::Text(reply)).await.is_err() { break; }
+                                    }
+                                    ClientMsg::SetMode { mode } => {
+                                        ptx.send(PlayerMessage::SetMode(mode)).ok();
                                     }
                                 }
                             }

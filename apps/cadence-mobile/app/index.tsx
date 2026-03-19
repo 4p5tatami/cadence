@@ -29,8 +29,14 @@ export default function App() {
     const [displayMs, setDisplayMs] = useState(0);
     const rafRef = useRef<number>(0);
 
-    const { status, playback, searchResults, search, play, pause, resume, stop, next, previous, seek } =
+    const { status, playback, searchResults, search, play, pause, resume, stop, next, previous, seek, setMode } =
         useDesktopSync(connectedUrl);
+    const MODES = ["Default", "Shuffle", "Replay"] as const;
+    const handleCycleMode = () => {
+        if (!playback) return;
+        const next = MODES[(MODES.indexOf(playback.mode) + 1) % MODES.length];
+        setMode(next);
+    };
     const [barWidth, setBarWidth] = useState(0);
     const devices = useDiscovery();
 
@@ -205,9 +211,12 @@ export default function App() {
                             <Text style={styles.ctrlText}>Next</Text>
                         </Pressable>
                     </View>
-                    <View style={[styles.controls, {marginTop: 8}]}>
+                    <View style={[styles.controls, {marginTop: 8, justifyContent: "center" }]}>
                         <Pressable style={styles.ctrlBtn} onPress={stop}>
                             <Text style={styles.ctrlText}>Stop</Text>
+                        </Pressable>
+                        <Pressable style={[styles.ctrlBtn, {position: "absolute", right: 0}]} onPress={handleCycleMode}>
+                            <Text style={styles.ctrlText}>Mode: {playback.mode}</Text>
                         </Pressable>
                     </View>
                 </View>

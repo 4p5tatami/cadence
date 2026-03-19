@@ -8,6 +8,8 @@ export interface TrackRecord {
     duration_ms: number;
 }
 
+export type PlayerMode = "Default" | "Shuffle" | "Replay";
+
 export interface PlaybackState {
     trackPath: string;
     title: string | null;
@@ -16,6 +18,7 @@ export interface PlaybackState {
     positionMs: number;
     playing: boolean;
     snapshotAtMs: number;
+    mode: PlayerMode;
 }
 
 type ConnectionStatus = "disconnected" | "connecting" | "connected" | "error";
@@ -101,6 +104,7 @@ export function useDesktopSync(url: string | null) {
                             positionMs: msg.position_ms,
                             playing: msg.playing,
                             snapshotAtMs: Date.now(), // use client receive time to avoid PC/phone clock skew
+                            mode: msg.mode ?? "Default",
                         });
                     } else if (msg.type === "stopped") {
                         setPlayback(null);
@@ -142,6 +146,7 @@ export function useDesktopSync(url: string | null) {
     const next = useCallback(() => send({ type: "next" }), [send]);
     const previous = useCallback(() => send({ type: "previous" }), [send]);
     const seek = useCallback((toMs: number) => send({ type: "seek", to_ms: toMs }), [send]);
+    const setMode = useCallback((mode: PlayerMode) => send({ type: "set_mode", mode }), [send]);
 
-    return { status, playback, searchResults, search, play, pause, resume, stop, next, previous, seek };
+    return { status, playback, searchResults, search, play, pause, resume, stop, next, previous, seek, setMode };
 }

@@ -3,11 +3,12 @@ pub use library::{Library, LibraryRecord, TrackRecord};
 
 use anyhow::{Context, Result};
 use rodio::{Decoder, OutputStream, OutputStreamHandle, Sink, Source};
-use serde::Serialize;
-use std::path::PathBuf;
+use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 use std::fs::File;
 use std::io::BufReader;
+use lofty::file::TaggedFile;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct TrackInfo {
@@ -17,11 +18,16 @@ pub struct TrackInfo {
     pub artist: Option<String>,
 }
 
-fn probe_tags(path: &std::path::Path) -> (Option<String>, Option<String>) {
-    use lofty::prelude::*;
-    let Some(tagged) = lofty::probe::Probe::open(path).ok()
+fn get_tagged_file(path: &Path) -> Option<TaggedFile> {
+    lofty::probe::Probe::open(path).ok()
         .and_then(|p| p.guess_file_type().ok())
         .and_then(|p| p.read().ok())
+}
+
+fn probe_tags(path: &Path) -> (Option<String>, Option<String>) {
+    use lofty::prelude::*;
+    let Some(tagged) =
+        get_tagged_file(path)
     else {
         return (None, None);
     };
@@ -124,12 +130,20 @@ fn scan_duration_ms(path: &std::path::Path) -> Option<u64> {
     Some((secs * 1000.0) as u64)
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum PlayerMode {
+    Default,
+    Shuffle,
+    Replay,
+}
+
 pub struct Player {
     _stream: OutputStream,
     _handle: OutputStreamHandle,
     sink: Sink,
     /// Current track state, if any
     current_track: Option<CurrentTrack>,
+    mode: PlayerMode,
 }
 
 impl Player {
@@ -142,6 +156,7 @@ impl Player {
             _handle: handle,
             sink,
             current_track: None,
+            mode: PlayerMode::Default,
         })
     }
 
@@ -204,7 +219,7 @@ impl Player {
         self.current_track = None;
     }
 
-    /// True when the sink has no more samples — i.e. the track finished playing.
+    /// True when the sink has no more samples i.e. the track finished playing.
     pub fn is_finished(&self) -> bool {
         self.sink.empty()
     }
@@ -214,10 +229,7 @@ impl Player {
 
         let Some(track) = &self.current_track else { return Ok(()) };
 
-        if to_ms >= track.info.duration_ms {
-            self.stop();
-            return Ok(());
-        }
+        let to_ms = to_ms.min(track.info.duration_ms.saturating_sub(1));
 
         let was_playing = track.last_playback_timestamp.is_some();
         self.sink.try_seek(Duration::from_millis(to_ms)).map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -227,5 +239,11 @@ impl Player {
         }
 
         Ok(())
+    }
+
+    pub fn get_mode(&self) -> PlayerMode { self.mode.clone() }
+    
+    pub fn set_mode(&mut self, mode: PlayerMode) {
+        self.mode = mode;
     }
 }

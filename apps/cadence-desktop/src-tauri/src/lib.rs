@@ -1,6 +1,6 @@
 mod websocket;
 
-use cadence_core::{Library, LibraryRecord, Player, TrackInfo, TrackRecord};
+use cadence_core::{Library, LibraryRecord, Player, PlayerMode, TrackInfo, TrackRecord};
 use serde::Serialize;
 use std::path::PathBuf;
 use std::sync::{mpsc, Arc};
@@ -14,6 +14,7 @@ pub(crate) enum PlayerMessage {
     Previous,
     Next,
     Seek(u64, mpsc::SyncSender<Result<(), String>>),
+    SetMode(PlayerMode),
     Status(mpsc::SyncSender<Option<StatusResponse>>),
 }
 
@@ -32,6 +33,7 @@ pub(crate) struct StatusResponse {
     pub paused: bool,
     pub title: Option<String>,
     pub artist: Option<String>,
+    pub mode: PlayerMode,
 }
 
 fn spawn_player_thread(lib_rx: mpsc::Receiver<Arc<Library>>) -> mpsc::Sender<PlayerMessage> {
@@ -43,6 +45,28 @@ fn spawn_player_thread(lib_rx: mpsc::Receiver<Arc<Library>>) -> mpsc::Sender<Pla
         // history[history_pos] is always the currently playing track (when non-empty).
         let mut history: Vec<PathBuf> = Vec::new();
         let mut history_pos: usize = 0;
+
+        // Advance to the next track: replay forward history or pick a random one.
+        let advance = |player: &mut Player, history: &mut Vec<PathBuf>, history_pos: &mut usize, library: &Library| {
+            if *history_pos + 1 < history.len() {
+                *history_pos += 1;
+                player.load_and_play(history[*history_pos].clone()).ok();
+            } else {
+                let current = player.current_track().map(|t| t.info.path.clone());
+                if let Ok(paths) = library.all_track_paths() {
+                    use rand::seq::SliceRandom;
+                    let candidates: Vec<&PathBuf> = paths.iter()
+                        .filter(|p| Some(*p) != current.as_ref())
+                        .collect();
+                    if let Some(next_path) = candidates.choose(&mut rand::thread_rng()) {
+                        let next_path = (*next_path).clone();
+                        history.push(next_path.clone());
+                        *history_pos = history.len() - 1;
+                        player.load_and_play(next_path).ok();
+                    }
+                }
+            }
+        };
 
         while let Ok(cmd) = rx.recv() {
             match cmd {
@@ -72,35 +96,28 @@ fn spawn_player_thread(lib_rx: mpsc::Receiver<Arc<Library>>) -> mpsc::Sender<Pla
                     }
                 }
                 PlayerMessage::Next => {
-                    if history_pos + 1 < history.len() {
-                        // Replay forward history.
-                        history_pos += 1;
-                        player.load_and_play(history[history_pos].clone()).ok();
-                    } else {
-                        // Pick a random track from the library, excluding the current one.
-                        let current = player.current_track().map(|t| t.info.path.clone());
-                        if let Ok(paths) = library.all_track_paths() {
-                            use rand::seq::SliceRandom;
-                            let candidates: Vec<&PathBuf> = paths.iter()
-                                .filter(|p| Some(*p) != current.as_ref())
-                                .collect();
-                            if let Some(next_path) = candidates.choose(&mut rand::thread_rng()) {
-                                let next_path = (*next_path).clone();
-                                history.push(next_path.clone());
-                                history_pos = history.len() - 1;
-                                player.load_and_play(next_path).ok();
-                            }
-                        }
-                    }
+                    advance(&mut player, &mut history, &mut history_pos, &library);
                 }
                 PlayerMessage::Seek(to_ms, reply) => {
                     let result = player.seek(to_ms).map_err(|e| e.to_string());
                     reply.send(result).ok();
                 }
+                PlayerMessage::SetMode(mode) => {
+                    player.set_mode(mode);
+                }
                 PlayerMessage::Status(reply) => {
                     // Auto-stop when rodio's sink runs dry (track reached EOF).
                     if player.current_track().is_some() && player.is_finished() {
-                        player.stop();
+                        match player.get_mode() {
+                            PlayerMode::Default => { player.stop() }
+                            PlayerMode::Replay => {
+                                let path = player.current_track().as_ref().unwrap().info.path.clone();
+                                player.load_and_play(path).ok();
+                            }
+                            PlayerMode::Shuffle => {
+                                advance(&mut player, &mut history, &mut history_pos, &library);
+                            }
+                        }
                     }
                     let status = player.current_track().map(|track| StatusResponse {
                         path: track.info.path.to_string_lossy().into_owned(),
@@ -109,6 +126,7 @@ fn spawn_player_thread(lib_rx: mpsc::Receiver<Arc<Library>>) -> mpsc::Sender<Pla
                         paused: track.last_playback_timestamp.is_none(),
                         title: track.info.title.clone(),
                         artist: track.info.artist.clone(),
+                        mode: player.get_mode(),
                     });
                     reply.send(status).ok();
                 }
@@ -156,6 +174,11 @@ fn seek(to_ms: u64, handle: State<PlayerHandle>) -> Result<(), String> {
     let (tx, rx) = mpsc::sync_channel(1);
     handle.tx.send(PlayerMessage::Seek(to_ms, tx)).ok();
     rx.recv().map_err(|_| "Player thread died".to_string())?
+}
+
+#[tauri::command]
+fn set_mode(mode: PlayerMode, handle: State<PlayerHandle>) {
+    handle.tx.send(PlayerMessage::SetMode(mode)).ok();
 }
 
 #[tauri::command]
@@ -272,7 +295,7 @@ pub fn run() {
         })
         .manage(PlayerHandle { tx: player_tx })
         .invoke_handler(tauri::generate_handler![
-            play, pause, resume, stop, next, previous, seek, status, ws_address,
+            play, pause, resume, stop, next, previous, seek, set_mode, status, ws_address,
             index_library, search_tracks, list_libraries, delete_library
         ])
         .run(tauri::generate_context!())
