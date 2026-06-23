@@ -30,6 +30,7 @@ function App() {
     const [results, setResults] = useState<TrackRecord[]>([]);
     const [wsAddr, setWsAddr] = useState<string | null>(null);
     const [menuOpen, setMenuOpen] = useState(false);
+    const [playError, setPlayError] = useState<string | null>(null);
     const menuRef = useRef<HTMLDivElement>(null);
 
     useEffect(() => {
@@ -53,8 +54,13 @@ function App() {
     }, [query]);
 
     const handlePlayResult = async (path: string) => {
-        await invoke("play", { path });
-        await sync();
+        setPlayError(null);
+        try {
+            await invoke("play", { path });
+            await sync();
+        } catch (e) {
+            setPlayError(String(e));
+        }
     };
 
     const handleBrowse = async () => {
@@ -63,8 +69,13 @@ function App() {
             filters: [{ name: "Audio", extensions: ["mp3", "flac", "wav", "ogg", "m4a", "aac", "opus", "wma"] }],
         });
         if (!path) return;
-        await invoke("play", { path });
-        await sync();
+        setPlayError(null);
+        try {
+            await invoke("play", { path });
+            await sync();
+        } catch (e) {
+            setPlayError(String(e));
+        }
     };
 
     const handlePause = async () => {
@@ -124,6 +135,13 @@ function App() {
                     style={{ flex: 1, padding: "0.4rem 0.6rem", fontSize: "0.9rem", border: "1px solid #333", borderRadius: "4px", background: "transparent", color: "inherit", outline: "none" }}
                 />
             </div>
+
+            {playError && (
+                <div style={{ marginTop: "0.75rem", padding: "0.5rem 0.75rem", background: "#2a1010", border: "1px solid #7a2020", borderRadius: "4px", color: "#f87171", fontSize: "0.85rem", display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "0.5rem" }}>
+                    <span style={{ wordBreak: "break-all" }}>{playError}</span>
+                    <button onClick={() => setPlayError(null)} style={{ background: "none", border: "none", color: "#f87171", cursor: "pointer", flexShrink: 0, fontSize: "1rem", lineHeight: 1 }}>✕</button>
+                </div>
+            )}
 
             {!active && results.length == 0 && (
                 <div style={{ display: "flex", gap: "0.5rem", marginTop: "0.7rem" }}>

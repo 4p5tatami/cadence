@@ -387,6 +387,7 @@ dependencies = [
  "rusqlite",
  "serde",
  "symphonia",
+ "tempfile",
  "walkdir",
 ]
 
