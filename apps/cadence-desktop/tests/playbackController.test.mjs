@@ -8,7 +8,7 @@ const source = await readFile(new URL("../src/hooks/playbackController.ts", impo
 const { outputText } = ts.transpileModule(source, {
     compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext },
 });
-const { PlaybackController } = await import(`data:text/javascript;base64,${Buffer.from(outputText).toString("base64")}`);
+const { PlaybackController, playbackClock, playbackPosition } = await import(`data:text/javascript;base64,${Buffer.from(outputText).toString("base64")}`);
 const deferred = () => {
     let resolve, reject;
     const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
@@ -17,6 +17,20 @@ const deferred = () => {
 const flush = () => new Promise(resolve => setImmediate(resolve));
 const snapshot = (position_ms, path = "a.flac", paused = false) => ({
     path, position_ms, duration_ms: 100000, paused, title: null, artist: null, mode: "Default",
+    output_state: "ready", playback_error: null,
+});
+
+test("recovery snapshots freeze the clock and ready snapshots restart it", () => {
+    for (const now of [0, 1000, 2000]) {
+        const clock = playbackClock({ ...snapshot(30000), output_state: "recovering" }, now);
+        assert.equal(playbackPosition(clock, now + 999), 30000);
+    }
+    const recovered = playbackClock(snapshot(30000), 3000);
+    assert.equal(playbackPosition(recovered, 3500), 30500);
+    const paused = playbackClock(snapshot(30000, "a.flac", true), 3000);
+    assert.equal(playbackPosition(paused, 3500), 30000);
+    const failed = playbackClock({ ...snapshot(30000), output_state: "ready", playback_error: "Cannot restore" }, 3000);
+    assert.equal(playbackPosition(failed, 3500), 30000);
 });
 async function harness() {
     const reads = [], seeks = [], applied = [], errors = [];

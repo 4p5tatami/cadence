@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { PlaybackController, type PlaybackStatus } from "./playbackController";
+import { PlaybackController, playbackClock, playbackPosition, type PlaybackStatus } from "./playbackController";
 
 export function usePlayback() {
     const startRef = useRef({ positionMs: 0, wallClock: 0, playing: false, durationMs: 0 });
@@ -19,12 +19,7 @@ export function usePlayback() {
                 }
                 setStatus(snapshot);
                 if (dragRef.current === null && controllerRef.current?.preview === null) {
-                    startRef.current = {
-                        positionMs: snapshot?.position_ms ?? 0,
-                        wallClock: performance.now(),
-                        playing: snapshot !== null && !snapshot.paused,
-                        durationMs: snapshot?.duration_ms ?? 0,
-                    };
+                    startRef.current = playbackClock(snapshot, performance.now());
                 }
             },
             setSeekError,
@@ -44,9 +39,9 @@ export function usePlayback() {
     useEffect(() => {
         let frame: number;
         const tick = () => {
-            const { positionMs, wallClock, playing, durationMs } = startRef.current;
+            const { durationMs } = startRef.current;
             const position = dragRef.current ?? controller.preview ??
-                (positionMs + (playing ? performance.now() - wallClock : 0));
+                playbackPosition(startRef.current, performance.now());
             setDisplayMs(Math.max(0, Math.min(position, durationMs)));
             frame = requestAnimationFrame(tick);
         };
@@ -70,6 +65,7 @@ export function usePlayback() {
         active: status !== null, trackPath: status?.path ?? null,
         trackTitle: status?.title ?? null, trackArtist: status?.artist ?? null,
         mode: status?.mode ?? "Default", onDragChange, onDragCommit,
+        outputState: status?.output_state ?? "ready", playbackError: status?.playback_error ?? null,
         sync: controller.poll, cancelSeek, seekError, clearSeekError: () => setSeekError(null),
     };
 }

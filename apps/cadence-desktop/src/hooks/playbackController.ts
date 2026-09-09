@@ -3,9 +3,24 @@ export interface PlaybackStatus {
     duration_ms: number;
     position_ms: number;
     paused: boolean;
+    output_state: "ready" | "recovering";
+    playback_error: string | null;
     title: string | null;
     artist: string | null;
     mode: "Default" | "Shuffle" | "Replay";
+}
+
+export function playbackClock(snapshot: PlaybackStatus | null, now: number) {
+    return {
+        positionMs: snapshot?.position_ms ?? 0,
+        wallClock: now,
+        playing: snapshot !== null && !snapshot.paused && snapshot.output_state === "ready" && !snapshot.playback_error,
+        durationMs: snapshot?.duration_ms ?? 0,
+    };
+}
+
+export function playbackPosition(clock: ReturnType<typeof playbackClock>, now: number) {
+    return Math.max(0, Math.min(clock.positionMs + (clock.playing ? now - clock.wallClock : 0), clock.durationMs));
 }
 
 /** Serializes seeks and prevents pre-seek/out-of-order snapshots moving the cursor. */

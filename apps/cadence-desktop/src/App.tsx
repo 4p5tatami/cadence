@@ -21,7 +21,7 @@ function fmt(ms: number) {
 }
 
 function App() {
-    const { displayMs, durationMs, paused, active, trackPath, trackTitle, trackArtist, mode: playbackMode, onDragChange, onDragCommit, sync, cancelSeek, seekError, clearSeekError } = usePlayback();
+    const { displayMs, durationMs, paused, active, trackPath, trackTitle, trackArtist, mode: playbackMode, onDragChange, onDragCommit, sync, cancelSeek, seekError, clearSeekError, outputState, playbackError } = usePlayback();
     const [mode, setMode] = useState<"Default" | "Shuffle" | "Replay">("Default");
     useEffect(() => { if (playbackMode) setMode(playbackMode); }, [playbackMode]);
 
@@ -142,6 +142,9 @@ function App() {
                     style={{ flex: 1, padding: "0.4rem 0.6rem", fontSize: "0.9rem", border: "1px solid #333", borderRadius: "4px", background: "transparent", color: "inherit", outline: "none" }}
                 />
             </div>
+
+            {outputState === "recovering" && <p role="status">Reconnecting audio output…</p>}
+            {playbackError && <p role="alert" style={{ color: "#f87171" }}>{playbackError}</p>}
 
             {(playError || seekError) && (
                 <div style={{ marginTop: "0.75rem", padding: "0.5rem 0.75rem", background: "#2a1010", border: "1px solid #7a2020", borderRadius: "4px", color: "#f87171", fontSize: "0.85rem", display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "0.5rem" }}>
