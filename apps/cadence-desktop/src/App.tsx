@@ -21,7 +21,7 @@ function fmt(ms: number) {
 }
 
 function App() {
-    const { displayMs, durationMs, paused, active, trackPath, trackTitle, trackArtist, mode: playbackMode, onDragChange, onDragCommit, sync } = usePlayback();
+    const { displayMs, durationMs, paused, active, trackPath, trackTitle, trackArtist, mode: playbackMode, onDragChange, onDragCommit, sync, cancelSeek, seekError, clearSeekError } = usePlayback();
     const [mode, setMode] = useState<"Default" | "Shuffle" | "Replay">("Default");
     useEffect(() => { if (playbackMode) setMode(playbackMode); }, [playbackMode]);
 
@@ -54,6 +54,7 @@ function App() {
     }, [query]);
 
     const handlePlayResult = async (path: string) => {
+        cancelSeek();
         setPlayError(null);
         try {
             await invoke("play", { path });
@@ -69,6 +70,7 @@ function App() {
             filters: [{ name: "Audio", extensions: ["mp3", "flac", "wav", "ogg", "m4a", "aac", "opus", "wma"] }],
         });
         if (!path) return;
+        cancelSeek();
         setPlayError(null);
         try {
             await invoke("play", { path });
@@ -84,16 +86,21 @@ function App() {
     };
 
     const handleStop = async () => {
+        cancelSeek();
         await invoke("stop");
         await sync();
     };
 
     const handlePrevious = async () => {
+        cancelSeek();
         await invoke("previous");
+        await sync();
     };
 
     const handleNext = async () => {
+        cancelSeek();
         await invoke("next");
+        await sync();
     }
 
     const MODES = ["Default", "Shuffle", "Replay"] as const;
@@ -136,10 +143,10 @@ function App() {
                 />
             </div>
 
-            {playError && (
+            {(playError || seekError) && (
                 <div style={{ marginTop: "0.75rem", padding: "0.5rem 0.75rem", background: "#2a1010", border: "1px solid #7a2020", borderRadius: "4px", color: "#f87171", fontSize: "0.85rem", display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "0.5rem" }}>
-                    <span style={{ wordBreak: "break-all" }}>{playError}</span>
-                    <button onClick={() => setPlayError(null)} style={{ background: "none", border: "none", color: "#f87171", cursor: "pointer", flexShrink: 0, fontSize: "1rem", lineHeight: 1 }}>✕</button>
+                    <span style={{ wordBreak: "break-all" }}>{playError || seekError}</span>
+                    <button onClick={() => { setPlayError(null); clearSeekError(); }} style={{ background: "none", border: "none", color: "#f87171", cursor: "pointer", flexShrink: 0, fontSize: "1rem", lineHeight: 1 }}>✕</button>
                 </div>
             )}
 

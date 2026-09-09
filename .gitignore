@@ -32,3 +32,6 @@ Thumbs.db
 *.opus
 *.wma
 *.alac
+
+# Original synthetic audio used by the seek regression test.
+!core/cadence-core/tests/fixtures/nonzero-origin.ogg
