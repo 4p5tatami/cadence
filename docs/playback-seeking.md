@@ -1,8 +1,10 @@
 # Playback seeking
 
 Playback uses Rodio 0.21.1 with an explicit file length, accurate seeking, and
-sink-reported progress. The player no longer copies FLAC files or decodes from
-the beginning on each seek. Tauri and WebSocket message shapes are unchanged.
+sink-reported progress plus the restored decoder position. The player no longer
+copies FLAC files or decodes from the beginning on each seek. Seeking prepares
+a fresh decoder before attaching it to a fresh sink, so it cannot block waiting
+for acknowledgment from a failed audio callback.
 
 ## Compatibility cases verified during implementation
 
@@ -22,8 +24,7 @@ modified. No frame index, full-file buffer, or temporary playback file is used.
 The same adapter handles Vorbis streams with a nonzero container origin, using
 bounded preroll for codec overlap history. Other streams retain Rodio decoding.
 
-Seek failures stop playback and are displayed: Rodio can change its position
-even after a failed seek, so continuing would risk displaying a false position.
+Seek failures pause playback and are displayed, preserving the track for retry.
 The desktop serializes seeks, retains only the latest pending target, and holds
 the cursor until an authoritative post-seek status arrives.
 
@@ -41,11 +42,53 @@ the cursor until an authoritative post-seek status arrives.
   comparisons allow 10 ms of container timing variation after codec warm-up.
   MP3 duration checks allow 50 ms for header-frame counts/padding.
 
-Representative debug-build measurements on the development PC: reported FLAC
+Historical debug-build measurements before output recovery: reported FLAC
 decoder seeks approximately 10 ms p95; muted real-device seek commands
 approximately 12 ms p95. This does **not** measure acoustic latency. A listening
 comparison with VLC and a physical mobile-client check remain manual validation.
 Headerless files may still require the existing synchronous duration scan.
+
+## Audio output recovery
+
+The stream error callback only sets a flag belonging to that output attempt.
+The player thread checks it every 25 ms independently of status requests,
+freezes the sample position, and replaces the failed sink and stream. It opens
+the current default output immediately, then retries after 250 ms, 500 ms,
+1 second, and every 2 seconds. Late callbacks from retired attempts are ignored.
+
+Recovery restores the track through the same decoder compatibility layer,
+including its position, volume, mode, and playing/paused intent. Pause and Stop
+cancel automatic resumption; a new track or seek changes the recovery target.
+Decoder restoration failures remain visible and paused until the user retries
+Play or selects another track. Output absence never counts as track completion.
+
+Tauri and WebSocket track status include `output_state` (`ready`, `recovering`)
+and nullable `playback_error`. Device availability is independent of decoder
+errors: a failed track can have a ready output. `paused` retains user intent;
+WebSocket `playing` is false unless the output is ready, playback is requested,
+and there is no playback error. This
+freezes existing mobile clients without a protocol migration. The desktop uses
+the same condition for its clock and displays “Reconnecting audio output…”
+while waiting. No output picker or silent default-device-change detection is
+included.
+
+`Player` coordinates an output connection and playback manager. `OutputConnection::new` schedules
+the first connection attempt; `PlaybackManager::new` starts without a track.
+`Player::new` calls `maintain_audio_output` immediately to attempt opening the
+default device. The connection enum owns its connection and recovery methods and contains either
+the live output and failure flag or the retry schedule. The playback manager
+owns sink replacement, the saved position, pause intent, and decoder errors.
+The player freezes playback before replacing a failed output and restores it
+after reconnection. A decoder error requires an explicit playback retry but
+does not prevent independent device recovery.
+
+Automated recovery tests use generated WAV audio and a manually consumed Rodio
+mixer, without an OS output device. They cover backoff, retired callbacks,
+position offsets, commands during outages, restoration errors, and remote and
+desktop clocks. Hardware acceptance remains manual: switch SoundBlaster outputs
+while playing and paused, switch repeatedly, then disconnect/reconnect the
+device. Check that the track resumes at the saved position only when requested,
+the slider stays still during the outage, and no shuffle/replay occurs.
 
 Run `cargo test --workspace --locked` and `npm test` / `npm run build` in
 `apps/cadence-desktop`. External tests are opt-in:
