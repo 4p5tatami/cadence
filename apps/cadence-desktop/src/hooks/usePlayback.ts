@@ -1,101 +1,75 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-
-type PlayerMode = "Default" | "Shuffle" | "Replay";
-
-interface StatusResponse {
-    path: string;
-    duration_ms: number;
-    position_ms: number;
-    paused: boolean;
-    title: string | null;
-    artist: string | null;
-    mode: PlayerMode;
-}
+import { PlaybackController, type PlaybackStatus } from "./playbackController";
 
 export function usePlayback() {
-    // Anchor for extrapolation - written by poll, read by rAF. Never in state.
-    const startRef = useRef({ positionMs: 0, wallClock: 0, playing: false });
-    // Non-null while the user is dragging the thumb.
+    const startRef = useRef({ positionMs: 0, wallClock: 0, playing: false, durationMs: 0 });
     const dragRef = useRef<number | null>(null);
-    // rAF handle for cleanup.
-    const rafRef = useRef<number>(0);
-
     const [displayMs, setDisplayMs] = useState(0);
-    const [durationMs, setDurationMs] = useState(0);
-    const [isPaused, setIsPaused] = useState(true);
-    const [isAnyTrackActive, setIsAnyTrackActive] = useState(false);
-    const [trackPath, setTrackPath] = useState<string | null>(null);
-    const [trackTitle, setTrackTitle] = useState<string | null>(null);
-    const [trackArtist, setTrackArtist] = useState<string | null>(null);
-    const [mode, setMode] = useState<PlayerMode>("Default");
-
-    // Polls backend and resets the extrapolation anchor.
-    const poll = useCallback(async () => {
-        const status = await invoke<StatusResponse | null>("status");
-        if (status === null) {
-            if (dragRef.current === null) {
-                startRef.current = { positionMs: 0, wallClock: Date.now(), playing: false };
-            }
-            setIsPaused(true);
-            setIsAnyTrackActive(false);
-            setTrackPath(null);
-            setTrackTitle(null);
-            setTrackArtist(null);
-            setDurationMs(0);
-        } else {
-            if (dragRef.current === null) {
-                startRef.current = {
-                    positionMs: status.position_ms,
-                    wallClock: Date.now(),
-                    playing: !status.paused,
-                };
-            }
-            setIsPaused(status.paused);
-            setIsAnyTrackActive(true);
-            setTrackPath(status.path);
-            setTrackTitle(status.title);
-            setTrackArtist(status.artist);
-            setDurationMs(status.duration_ms);
-            setMode(status.mode);
-        }
-    }, []);
-
-    // Poll every second.
-    useEffect(() => {
-        void poll();
-        const id = setInterval(() => { void poll(); }, 1000);
-        return () => clearInterval(id);
-    }, [poll]);
-
-    // rAF loop - extrapolates forward from the last anchor at 60fps.
-    const tick = useCallback(() => {
-        if (dragRef.current !== null) {
-            setDisplayMs(dragRef.current);
-        } else {
-            const { positionMs, wallClock, playing } = startRef.current;
-            const elapsed = playing ? Date.now() - wallClock : 0;
-            setDisplayMs(positionMs + elapsed);
-        }
-        rafRef.current = requestAnimationFrame(tick);
-    }, []);
+    const [status, setStatus] = useState<PlaybackStatus | null>(null);
+    const [seekError, setSeekError] = useState<string | null>(null);
+    const controllerRef = useRef<PlaybackController | null>(null);
+    if (controllerRef.current === null) {
+        controllerRef.current = new PlaybackController(
+            () => invoke<PlaybackStatus | null>("status"),
+            (toMs) => invoke("seek", { toMs }),
+            (snapshot, changedTrack) => {
+                if (changedTrack) {
+                    dragRef.current = null;
+                }
+                setStatus(snapshot);
+                if (dragRef.current === null && controllerRef.current?.preview === null) {
+                    startRef.current = {
+                        positionMs: snapshot?.position_ms ?? 0,
+                        wallClock: performance.now(),
+                        playing: snapshot !== null && !snapshot.paused,
+                        durationMs: snapshot?.duration_ms ?? 0,
+                    };
+                }
+            },
+            setSeekError,
+        );
+    }
+    const controller = controllerRef.current;
 
     useEffect(() => {
-        rafRef.current = requestAnimationFrame(tick);
-        return () => cancelAnimationFrame(rafRef.current);
-    }, [tick]);
+        void controller.poll();
+        const interval = setInterval(() => { void controller.poll(); }, 1000);
+        return () => {
+            clearInterval(interval);
+            controller.cancel();
+        };
+    }, [controller]);
 
-    // Called on every thumb move - freezes the display at the drag position.
-    const onDragChange = useCallback((ms: number) => {
-        dragRef.current = ms;
-    }, []);
+    useEffect(() => {
+        let frame: number;
+        const tick = () => {
+            const { positionMs, wallClock, playing, durationMs } = startRef.current;
+            const position = dragRef.current ?? controller.preview ??
+                (positionMs + (playing ? performance.now() - wallClock : 0));
+            setDisplayMs(Math.max(0, Math.min(position, durationMs)));
+            frame = requestAnimationFrame(tick);
+        };
+        frame = requestAnimationFrame(tick);
+        return () => cancelAnimationFrame(frame);
+    }, [controller]);
 
-    // Called on pointer-up - seeks backend and restores normal extrapolation.
-    const onDragCommit = useCallback(async (ms: number) => {
+    const onDragChange = useCallback((ms: number) => { dragRef.current = ms; }, []);
+    const onDragCommit = useCallback((ms: number) => {
         dragRef.current = null;
-        startRef.current = { positionMs: ms, wallClock: Date.now(), playing: startRef.current.playing };
-        await invoke("seek", { toMs: ms });
-    }, []);
+        controller.seek(Math.max(0, Math.min(ms, startRef.current.durationMs)));
+    }, [controller]);
+    const cancelSeek = useCallback(() => {
+        dragRef.current = null;
+        setSeekError(null);
+        controller.cancel();
+    }, [controller]);
 
-    return { displayMs, durationMs, paused: isPaused, active: isAnyTrackActive, trackPath, trackTitle, trackArtist, mode, onDragChange, onDragCommit, sync: poll };
+    return {
+        displayMs, durationMs: status?.duration_ms ?? 0, paused: status?.paused ?? true,
+        active: status !== null, trackPath: status?.path ?? null,
+        trackTitle: status?.title ?? null, trackArtist: status?.artist ?? null,
+        mode: status?.mode ?? "Default", onDragChange, onDragCommit,
+        sync: controller.poll, cancelSeek, seekError, clearSeekError: () => setSeekError(null),
+    };
 }

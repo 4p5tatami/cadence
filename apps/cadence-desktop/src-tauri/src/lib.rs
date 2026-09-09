@@ -123,7 +123,7 @@ fn spawn_player_thread(lib_rx: mpsc::Receiver<Arc<Library>>) -> mpsc::Sender<Pla
                         path: track.info.path.to_string_lossy().into_owned(),
                         duration_ms: track.info.duration_ms,
                         position_ms: player.current_position_ms(),
-                        paused: track.last_playback_timestamp.is_none(),
+                        paused: player.is_paused(),
                         title: track.info.title.clone(),
                         artist: track.info.artist.clone(),
                         mode: player.get_mode(),
