@@ -1,6 +1,6 @@
 mod websocket;
 
-use cadence_core::{Library, LibraryRecord, Player, PlayerMode, TrackInfo, TrackRecord};
+use cadence_core::{Library, LibraryRecord, OutputState, Player, PlayerMode, TrackInfo, TrackRecord};
 use serde::Serialize;
 use std::path::PathBuf;
 use std::sync::{mpsc, Arc};
@@ -31,6 +31,8 @@ pub(crate) struct StatusResponse {
     pub duration_ms: u64,
     pub position_ms: u64,
     pub paused: bool,
+    pub output_state: OutputState,
+    pub playback_error: Option<String>,
     pub title: Option<String>,
     pub artist: Option<String>,
     pub mode: PlayerMode,
@@ -68,7 +70,14 @@ fn spawn_player_thread(lib_rx: mpsc::Receiver<Arc<Library>>) -> mpsc::Sender<Pla
             }
         };
 
-        while let Ok(cmd) = rx.recv() {
+        loop {
+            player.maintain_audio_output();
+            let cmd = match rx.recv_timeout(std::time::Duration::from_millis(25)) {
+                Ok(cmd) => cmd,
+                Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            };
+            player.maintain_audio_output();
             match cmd {
                 PlayerMessage::Play(path, reply) => {
                     // Truncate any forward history, then append the new track.
@@ -124,6 +133,8 @@ fn spawn_player_thread(lib_rx: mpsc::Receiver<Arc<Library>>) -> mpsc::Sender<Pla
                         duration_ms: track.info.duration_ms,
                         position_ms: player.current_position_ms(),
                         paused: player.is_paused(),
+                        output_state: player.output_state(),
+                        playback_error: player.playback_error().map(str::to_owned),
                         title: track.info.title.clone(),
                         artist: track.info.artist.clone(),
                         mode: player.get_mode(),

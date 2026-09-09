@@ -7,7 +7,7 @@ use tokio::net::TcpListener;
 use tokio::sync::broadcast;
 use tokio_tungstenite::tungstenite::Message;
 
-use cadence_core::{Library, PlayerMode, TrackRecord};
+use cadence_core::{Library, OutputState, PlayerMode, TrackRecord};
 use crate::{PlayerMessage, StatusResponse};
 
 /// State broadcast sent to all clients every 500 ms.
@@ -21,6 +21,8 @@ struct StateMsg<'a> {
     duration_ms: u64,
     position_ms: u64,
     playing: bool,
+    output_state: OutputState,
+    playback_error: Option<&'a str>,
     snapshot_at_ms: u64,
     mode: &'a PlayerMode,
 }
@@ -64,11 +66,45 @@ fn state_json(status: &StatusResponse) -> String {
         artist: status.artist.as_deref(),
         duration_ms: status.duration_ms,
         position_ms: status.position_ms,
-        playing: !status.paused,
+        playing: !status.paused && status.output_state == OutputState::Ready && status.playback_error.is_none(),
+        output_state: status.output_state,
+        playback_error: status.playback_error.as_deref(),
         snapshot_at_ms: now_ms(),
         mode: &status.mode,
     };
     serde_json::to_string(&msg).unwrap()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn remote_clock_stops_during_recovery_and_errors() {
+        let mut status = StatusResponse {
+            path: "track.wav".into(), duration_ms: 60000, position_ms: 30000,
+            paused: false, output_state: OutputState::Recovering,
+            playback_error: None, title: None, artist: None, mode: PlayerMode::Default,
+        };
+        for (state, paused, playing) in [
+            (OutputState::Recovering, false, false),
+            (OutputState::Ready, true, false),
+            (OutputState::Ready, false, true),
+        ] {
+            status.output_state = state;
+            status.paused = paused;
+            let wire: serde_json::Value = serde_json::from_str(&state_json(&status)).unwrap();
+            assert_eq!(wire["playing"], playing);
+            assert_eq!(wire["position_ms"], 30000);
+            assert_eq!(wire["output_state"], serde_json::to_value(state).unwrap());
+            assert_eq!(wire["type"], "state");
+        }
+        status.playback_error = Some("Cannot restore playback position".into());
+        let wire: serde_json::Value = serde_json::from_str(&state_json(&status)).unwrap();
+        assert_eq!(wire["playback_error"], "Cannot restore playback position");
+        assert_eq!(wire["output_state"], "ready");
+        assert_eq!(wire["playing"], false);
+    }
 }
 
 pub async fn serve(
