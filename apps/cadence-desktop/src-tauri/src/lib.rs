@@ -54,7 +54,7 @@ fn spawn_player_thread(lib_rx: mpsc::Receiver<Arc<Library>>) -> mpsc::Sender<Pla
                 *history_pos += 1;
                 player.load_and_play(history[*history_pos].clone()).ok();
             } else {
-                let current = player.current_track().map(|t| t.info.path.clone());
+                let current = player.current_track().map(|t| t.path.clone());
                 if let Ok(paths) = library.all_track_paths() {
                     use rand::seq::SliceRandom;
                     let candidates: Vec<&PathBuf> = paths.iter()
@@ -120,7 +120,7 @@ fn spawn_player_thread(lib_rx: mpsc::Receiver<Arc<Library>>) -> mpsc::Sender<Pla
                         match player.get_mode() {
                             PlayerMode::Default => { player.stop() }
                             PlayerMode::Replay => {
-                                let path = player.current_track().as_ref().unwrap().info.path.clone();
+                                let path = player.current_track().as_ref().unwrap().path.clone();
                                 player.load_and_play(path).ok();
                             }
                             PlayerMode::Shuffle => {
@@ -129,14 +129,14 @@ fn spawn_player_thread(lib_rx: mpsc::Receiver<Arc<Library>>) -> mpsc::Sender<Pla
                         }
                     }
                     let status = player.current_track().map(|track| StatusResponse {
-                        path: track.info.path.to_string_lossy().into_owned(),
-                        duration_ms: track.info.duration_ms,
+                        path: track.path.to_string_lossy().into_owned(),
+                        duration_ms: track.duration_ms,
                         position_ms: player.current_position_ms(),
                         paused: player.is_paused(),
                         output_state: player.output_state(),
                         playback_error: player.playback_error().map(str::to_owned),
-                        title: track.info.title.clone(),
-                        artist: track.info.artist.clone(),
+                        title: track.title.clone(),
+                        artist: track.artist.clone(),
                         mode: player.get_mode(),
                     });
                     reply.send(status).ok();

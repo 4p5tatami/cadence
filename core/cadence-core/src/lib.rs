@@ -40,13 +40,6 @@ fn probe_tags(path: &Path) -> (Option<String>, Option<String>) {
     (title, artist)
 }
 
-/// Represents the current state of a playing track
-#[derive(Debug)]
-pub struct CurrentTrack {
-    /// Information about the track (path, duration)
-    pub info: TrackInfo,
-}
-
 /// Fallback duration probe for files where the decoder can't report total_duration()
 /// (e.g. VBR MP3s without a Xing/VBRI header).
 fn scan_duration_ms(path: &Path) -> Option<u64> {
@@ -215,7 +208,7 @@ impl OutputConnection {
 /// Owns track playback, its saved position, user intent, and decoder errors.
 struct PlaybackManager {
     sink: Sink,
-    current_track: Option<CurrentTrack>,
+    current_track: Option<TrackInfo>,
     paused: bool,
     position_offset_ms: u64,
     playback_error: Option<String>,
@@ -239,7 +232,7 @@ impl PlaybackManager {
             .map(|t| {
                 self.position_offset_ms
                     .saturating_add(self.sink.get_pos().as_millis() as u64)
-                    .min(t.info.duration_ms)
+                    .min(t.duration_ms)
             })
             .unwrap_or(0)
     }
@@ -274,7 +267,7 @@ impl PlaybackManager {
     fn restore_on_output(&mut self, mixer: &rodio::mixer::Mixer) -> Result<()> {
         let result: Result<()> = (|| {
             if let Some(track) = &self.current_track {
-                let mut src = audio_input::decoder(&track.info.path)?;
+                let mut src = audio_input::decoder(&track.path)?;
                 src.try_seek(Duration::from_millis(self.position_offset_ms))
                     .map_err(|e| anyhow::anyhow!("Cannot restore playback position: {e:?}"))?;
                 self.attach_source(src, mixer);
@@ -313,7 +306,7 @@ impl PlaybackManager {
         self.position_offset_ms = 0;
         self.paused = false;
         self.playback_error = None;
-        self.current_track = Some(CurrentTrack { info: info.clone() });
+        self.current_track = Some(info.clone());
         if let Some(mixer) = mixer {
             self.attach_source(src, mixer);
         }
@@ -354,7 +347,7 @@ impl PlaybackManager {
         let Some(track) = &self.current_track else {
             return Ok(());
         };
-        self.position_offset_ms = to_ms.min(track.info.duration_ms.saturating_sub(1));
+        self.position_offset_ms = to_ms.min(track.duration_ms.saturating_sub(1));
         self.reset_sink();
         self.playback_error = None;
         if let Some(mixer) = mixer {
@@ -410,7 +403,7 @@ impl Player {
         }
     }
 
-    pub fn current_track(&self) -> Option<&CurrentTrack> {
+    pub fn current_track(&self) -> Option<&TrackInfo> {
         self.playback_manager.current_track.as_ref()
     }
     pub fn current_position_ms(&self) -> u64 {
@@ -623,7 +616,7 @@ mod playback_tests {
         player.pause();
         assert!(player.is_paused());
         player.load_and_play(second.0.clone()).unwrap();
-        assert_eq!(player.current_track().unwrap().info.path, second.0);
+        assert_eq!(player.current_track().unwrap().path, second.0);
         assert_eq!(player.current_position_ms(), 0);
         assert!(!player.is_paused());
         player.seek(99999).unwrap();
