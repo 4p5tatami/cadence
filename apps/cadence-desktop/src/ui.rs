@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use cadence_core::{Library, LibraryRecord};
+use cadence_core::{library::IndexCancellation, Library, LibraryRecord};
 use fltk::{
     app,
     button::Button,
@@ -32,7 +32,7 @@ pub(crate) enum Message {
     AddFolder,
     RemoveFolder(i64),
     ScanProgress(usize),
-    Finished(Result<Option<usize>, String>),
+    Finished(Result<(), String>),
     Playback(String),
 }
 
@@ -54,6 +54,7 @@ pub(crate) fn run(
 
     let mut size = (view.window.w(), view.window.h());
     let mut busy = false;
+    let mut indexing: Option<IndexDialog> = None;
     while app.wait() {
         let current_size = (view.window.w(), view.window.h());
         if current_size != size {
@@ -85,19 +86,26 @@ pub(crate) fn run(
                 }
                 Message::RemoveFolder(id) if !busy => Operation::Remove(id),
                 Message::ScanProgress(count) => {
-                    view.set_status(&format!("Indexing… {} scanned", track_count(count)), false);
+                    if let Some(dialog) = &mut indexing {
+                        dialog.update_progress(count);
+                    }
                     continue;
                 }
                 Message::Finished(result) => {
+                    if let Some(mut dialog) = indexing.take() {
+                        dialog.window.hide();
+                        app::delete_widget(dialog.window);
+                        if let Err(error) = result {
+                            fltk::dialog::alert_default(&error);
+                        }
+                    } else {
+                        match result {
+                            Ok(()) => view.set_status("", false),
+                            Err(error) => view.set_status(&error, true),
+                        }
+                    }
                     busy = false;
                     view.set_busy(false);
-                    match result {
-                        Ok(Some(count)) => {
-                            view.set_status(&format!("{} indexed", track_count(count)), false)
-                        }
-                        Ok(None) => view.set_status("", false),
-                        Err(error) => view.set_status(&error, true),
-                    }
                     view.refresh(&library, sender);
                     continue;
                 }
@@ -106,33 +114,95 @@ pub(crate) fn run(
 
             busy = true;
             view.set_busy(true);
-            let status = match operation {
-                Operation::Index(_) => "Indexing…",
-                Operation::Remove(_) => "Removing folder from the library…",
-            };
-            view.set_status(status, false);
             let library = Arc::clone(&library);
-            std::thread::spawn(move || {
-                let result = match operation {
-                    Operation::Index(path) => {
+            match operation {
+                Operation::Index(path) => {
+                    view.set_status("", false);
+                    let cancellation = Arc::new(IndexCancellation::default());
+                    indexing = Some(IndexDialog::show(
+                        &view.window,
+                        &path,
+                        Arc::clone(&cancellation),
+                    ));
+                    std::thread::spawn(move || {
                         let mut last_update = Instant::now();
-                        library
-                            .index_directory(&path, |scanned| {
+                        let result = library
+                            .index_directory_cancellable(&path, &cancellation, |scanned| {
                                 if last_update.elapsed() >= Duration::from_millis(100) {
                                     sender.send(Message::ScanProgress(scanned));
                                     last_update = Instant::now();
                                 }
                             })
-                            .map(Some)
-                            .map_err(|error| format!("Indexing failed. {error:#}"))
-                    }
-                    Operation::Remove(id) => library
-                        .delete_library(id)
-                        .map(|()| None)
-                        .map_err(|error| format!("Could not remove folder. {error:#}")),
+                            .map(|_| ())
+                            .map_err(|error| format!("Indexing failed. {error:#}"));
+                        sender.send(Message::Finished(result));
+                    });
+                }
+                Operation::Remove(id) => {
+                    view.set_status("Removing folder from the library…", false);
+                    std::thread::spawn(move || {
+                        let result = library
+                            .delete_library(id)
+                            .map_err(|error| format!("Could not remove folder. {error:#}"));
+                        sender.send(Message::Finished(result));
+                    });
+                }
+            }
+        }
+    }
+}
+
+struct IndexDialog {
+    window: Window,
+    progress: Frame,
+    cancel: Button,
+}
+
+impl IndexDialog {
+    fn show(parent: &Window, path: &Path, cancellation: Arc<IndexCancellation>) -> Self {
+        let (width, height) = (440, 146);
+        let x = parent.x() + (parent.w() - width) / 2;
+        let y = parent.y() + (parent.h() - height) / 2;
+        Group::set_current(None::<&Group>);
+        let mut window = Window::new(x, y, width, height, "Indexing Music Folder");
+        window.make_modal(true);
+
+        let mut folder = Frame::new(20, 18, 400, 24, None);
+        folder.set_label(&path.to_string_lossy());
+        folder.set_tooltip(&path.to_string_lossy());
+        folder.set_align(Align::Left | Align::Inside | Align::Clip);
+        let mut progress = Frame::new(20, 49, 400, 24, "Scanning for tracks…");
+        progress.set_align(Align::Left | Align::Inside);
+
+        let mut cancel = Button::new(320, 93, 100, 33, "Cancel");
+        let mut progress_label = progress.clone();
+        cancel.set_callback(move |button| {
+            if button.active() {
+                let label = if cancellation.cancel() {
+                    "Cancelling…"
+                } else {
+                    "Finishing…"
                 };
-                sender.send(Message::Finished(result));
-            });
+                progress_label.set_label(label);
+                button.deactivate();
+            }
+        });
+        let mut cancel_button = cancel.clone();
+        window.set_callback(move |_| cancel_button.do_callback());
+        window.end();
+        window.show();
+
+        Self {
+            window,
+            progress,
+            cancel,
+        }
+    }
+
+    fn update_progress(&mut self, count: usize) {
+        if self.cancel.active() {
+            self.progress
+                .set_label(&format!("{} scanned", track_count(count)));
         }
     }
 }

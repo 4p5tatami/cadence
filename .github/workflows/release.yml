@@ -1,36 +1,65 @@
 name: Release
 
 on:
-  push:
-    tags: ['v*']
+  pull_request_target:
+    branches: [main]
+    types: [closed]
 
 permissions:
   contents: read
 
 concurrency:
-  group: release-${{ github.ref }}
-  cancel-in-progress: false
+  group: ${{ github.event.pull_request.merged && 'cadence-main-release' || github.run_id }}
+  queue: max
 
 jobs:
   ci:
+    needs: version
     uses: ./.github/workflows/ci.yml
+    with:
+      revision: ${{ needs.version.outputs.revision }}
 
   version:
+    if: github.event.pull_request.merged == true
     runs-on: ubuntu-24.04
     outputs:
       number: ${{ steps.version.outputs.number }}
+      revision: ${{ steps.version.outputs.revision }}
     steps:
-      - name: Read version tag
+      # The merged revision must be part of main before any job builds it.
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.merge_commit_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify merged commit and allocate version
         id: version
         run: |
-          if [[ ! "$GITHUB_REF_NAME" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]?)\.(0|[1-9][0-9]?)$ ]]; then
-            echo '::error::Use a vMAJOR.MINOR.PATCH tag with minor and patch between 0 and 99.'
+          if ! git merge-base --is-ancestor HEAD origin/main; then
+            echo '::error::The merged revision is no longer in main.'
             exit 1
           fi
-          printf 'number=%s\n' "${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          printf 'revision=%s\n' "$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          import re
+          import subprocess
+          from pathlib import Path
+
+          baseline = json.loads(Path('apps/cadence-mobile/app.json').read_text())['expo']['version']
+          versions = [baseline, *[tag[1:] for tag in subprocess.check_output(
+              ['git', 'tag', '--list', 'v*'], text=True
+          ).splitlines()]]
+          pattern = r'(0|[1-9][0-9]*)\.(0|[1-9][0-9]?)\.(0|[1-9][0-9]?)'
+          if not re.fullmatch(pattern, baseline):
+              raise SystemExit(f'Invalid Android baseline version: {baseline}')
+          last = max(tuple(map(int, v.split('.'))) for v in versions if re.fullmatch(pattern, v))
+          number = last[0] * 10000 + last[1] * 100 + last[2] + 1
+          print(f'number={number // 10000}.{number // 100 % 100}.{number % 100}')
+          PY
 
   desktop:
-    needs: [ci, version]
+    needs: version
     strategy:
       fail-fast: false
       matrix:
@@ -46,6 +75,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
+          ref: ${{ needs.version.outputs.revision }}
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
@@ -92,7 +122,7 @@ jobs:
           overwrite: true
 
   android:
-    needs: [ci, version]
+    needs: version
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     defaults:
@@ -101,6 +131,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
+          ref: ${{ needs.version.outputs.revision }}
           persist-credentials: false
       - uses: actions/setup-node@v6
         with:
@@ -111,6 +142,8 @@ jobs:
         with:
           distribution: temurin
           java-version: 17
+          cache: gradle
+          cache-dependency-path: apps/cadence-mobile/package-lock.json
       - name: Restore Android signing key
         id: signing
         env:
@@ -152,6 +185,7 @@ jobs:
       - name: Verify release signing certificate
         env:
           EXPECTED_FINGERPRINT: ${{ steps.signing.outputs.fingerprint }}
+          VERSION: ${{ needs.version.outputs.number }}
         run: |
           apk=android/app/build/outputs/apk/release/app-release.apk
           certificates=$("$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --print-certs "$apk")
@@ -160,7 +194,7 @@ jobs:
             echo '::error::The APK signing certificate differs from the Cadence release key.'
             exit 1
           fi
-          mv "$apk" "cadence-$GITHUB_REF_NAME-android-arm64.apk"
+          mv "$apk" "cadence-v$VERSION-android-arm64.apk"
       - uses: actions/upload-artifact@v7
         with:
           name: release-android
@@ -169,11 +203,16 @@ jobs:
           overwrite: true
 
   publish:
-    needs: [desktop, android]
+    needs: [version, ci, desktop, android]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.version.outputs.revision }}
+          fetch-depth: 0
+          persist-credentials: false
       - uses: actions/download-artifact@v8
         with:
           pattern: release-*
@@ -183,20 +222,48 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
+          TAG: v${{ needs.version.outputs.number }}
+          REVISION: ${{ needs.version.outputs.revision }}
         run: |
-          mapfile -d '' assets < <(find release-assets -type f -print0)
-          if (( ${#assets[@]} == 0 )); then
-            echo '::error::No release assets were downloaded.'
+          if ! git merge-base --is-ancestor "$REVISION" origin/main; then
+            echo '::error::The release revision is no longer in main.'
             exit 1
           fi
-          if is_draft=$(gh release view "$GITHUB_REF_NAME" --json isDraft --jq .isDraft); then
+          latest=$(gh release list --exclude-drafts --exclude-pre-releases \
+            --limit 100 --json isLatest,tagName --jq '.[] | select(.isLatest) | .tagName')
+          if [[ -n "$latest" ]] && git merge-base --is-ancestor "$REVISION" "refs/tags/$latest"; then
+            echo 'This revision or a newer revision has already been released.'
+            exit 0
+          fi
+
+          shopt -s globstar nullglob
+          assets=()
+          for extension in exe msi deb rpm AppImage apk; do
+            files=(release-assets/**/*."$extension")
+            if (( ${#files[@]} != 1 )); then
+              echo "::error::Expected exactly one $extension release asset."
+              exit 1
+            fi
+            assets+=("${files[0]}")
+          done
+
+          if git show-ref --verify --quiet "refs/tags/$TAG"; then
+            if [[ $(git rev-parse "refs/tags/$TAG^{commit}") != "$REVISION" ]]; then
+              echo "::error::$TAG already points to another revision. Rerun all jobs to allocate a new version."
+              exit 1
+            fi
+          else
+            gh api --method POST "repos/$GH_REPO/git/refs" -f "ref=refs/tags/$TAG" -f "sha=$REVISION" >/dev/null
+          fi
+
+          if is_draft=$(gh release view "$TAG" --json isDraft --jq .isDraft); then
             if [[ "$is_draft" == false ]]; then
-              echo "Release $GITHUB_REF_NAME is already published."
+              echo "Release $TAG is already published."
               exit 0
             fi
-            gh release upload "$GITHUB_REF_NAME" "${assets[@]}" --clobber
+            gh release upload "$TAG" "${assets[@]}" --clobber
           else
-            gh release create "$GITHUB_REF_NAME" "${assets[@]}" --draft --verify-tag \
-              --title "Cadence $GITHUB_REF_NAME" --generate-notes
+            gh release create "$TAG" "${assets[@]}" --draft --verify-tag \
+              --title "Cadence $TAG" --generate-notes
           fi
-          gh release edit "$GITHUB_REF_NAME" --draft=false
+          gh release edit "$TAG" --draft=false --latest

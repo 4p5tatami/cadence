@@ -98,7 +98,7 @@ Run `cargo test --workspace --locked` from the repository root. For the Android 
 
 ## GitHub releases
 
-CI runs the Rust workspace tests and the Android TypeScript check on pull requests to `main` and pushes to `main`. A new `vMAJOR.MINOR.PATCH` tag runs those checks again and publishes one GitHub Release with Windows x64 `.exe` and `.msi` installers, Linux x64 `.deb`, `.rpm`, and AppImage packages, and a signed Android ARM64 APK.
+Merging a pull request into `main` runs the Rust workspace tests and Android TypeScript check alongside the release builds. If all jobs pass, the workflow publishes Windows x64 `.exe` and `.msi` installers, Linux x64 `.deb`, `.rpm`, and AppImage packages, and a signed Android ARM64 APK in one GitHub Release.
 
 ### One-time setup
 
@@ -116,16 +116,10 @@ CI runs the Rust workspace tests and the Android TypeScript check on pull reques
    gh secret set ANDROID_KEYSTORE_PASSWORD
    ```
 
-### Publish a version
+### Deploy from main
 
-1. Merge the changes to `main` and wait for **Cadence checks** to pass.
-2. Tag the latest `main` commit with an unused version. The tag sets the installer and APK versions. Use minor and patch numbers from 0 to 99 and an Android version newer than the last distributed APK.
+1. Merge a pull request into `main` and open **Actions → Release**. The workflow builds the merged commit and assigns the next version above the existing version tags and the Android app's configured version.
+2. When all checks and builds pass, the workflow tags that commit and publishes the new **Latest** release. If a step fails before publication, the previous release stays live. The merge commit remains in `main`.
+3. To retry a failed job, use **Re-run failed jobs** in Actions. For a code fix, merge a new pull request.
 
-   ```bash
-   git switch main &&
-   git pull --ff-only origin main &&
-   read -r -p 'Release version (MAJOR.MINOR.PATCH): ' version &&
-   git tag -a "v$version" -m "Cadence v$version" && git push origin "v$version"
-   ```
-
-3. Watch the **Release** workflow in the **Actions** tab. Once it passes, the installers, APK, and generated release notes appear under **Releases**.
+If a branch rule requires **Cadence checks** before merging, remove that required check when switching to this workflow. The check now runs after the merge.
