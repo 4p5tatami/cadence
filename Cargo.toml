@@ -4,3 +4,9 @@ members = [
   "apps/cadence-desktop/src-tauri",
 ]
 resolver = "2"
+
+# Optimise dependencies (lofty, symphonia, SQLite, ...) in dev builds. Unoptimised,
+# tag probing and decoding are several times slower under `tauri dev`. Workspace
+# crates stay at opt-level 0 so they still compile quickly and debug cleanly.
+[profile.dev.package."*"]
+opt-level = 2

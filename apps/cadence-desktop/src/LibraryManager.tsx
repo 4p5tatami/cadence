@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
@@ -6,6 +7,11 @@ import { Button } from "@/components/ui/button";
 interface LibraryRecord {
     id: number;
     path: string;
+}
+
+interface IndexProgress {
+    path: string;
+    scanned: number;
 }
 
 interface Props {
@@ -16,6 +22,7 @@ export function LibraryManager({ onBack }: Props) {
     const [libraries, setLibraries] = useState<LibraryRecord[]>([]);
     const [selectedId, setSelectedId] = useState<number | null>(null);
     const [status, setStatus] = useState<string | null>(null);
+    const [indexing, setIndexing] = useState(false);
 
     const refresh = () => {
         invoke<LibraryRecord[]>("list_libraries").then(setLibraries);
@@ -23,20 +30,38 @@ export function LibraryManager({ onBack }: Props) {
 
     useEffect(() => { refresh(); }, []);
 
+    useEffect(() => {
+        const unlisten = listen<IndexProgress>("index-progress", ({ payload }) => {
+            setStatus(`Indexing… ${payload.scanned.toLocaleString()} tracks scanned`);
+        });
+        return () => { void unlisten.then(fn => fn()); };
+    }, []);
+
     const handleAdd = async () => {
         const dir = await open({ directory: true, multiple: false });
         if (!dir) return;
+        setIndexing(true);
         setStatus("Indexing…");
-        const count = await invoke<number>("index_library", { path: dir });
-        setStatus(`${count} tracks indexed`);
-        refresh();
+        try {
+            const count = await invoke<number>("index_library", { path: dir });
+            setStatus(`${count.toLocaleString()} tracks indexed`);
+        } catch (error) {
+            setStatus(`Indexing failed: ${String(error)}`);
+        } finally {
+            setIndexing(false);
+            refresh();
+        }
     };
 
     const handleRemove = async () => {
         if (selectedId === null) return;
-        await invoke("delete_library", { id: selectedId });
+        try {
+            await invoke("delete_library", { id: selectedId });
+            setStatus(null);
+        } catch (error) {
+            setStatus(`Remove failed: ${String(error)}`);
+        }
         setSelectedId(null);
-        setStatus(null);
         refresh();
     };
 
@@ -50,7 +75,7 @@ export function LibraryManager({ onBack }: Props) {
                 <h2 style={{ margin: 0 }}>Libraries</h2>
             </div>
 
-            <Button variant="outline" onClick={() => void handleAdd()}>Add Folder</Button>
+            <Button variant="outline" disabled={indexing} onClick={() => void handleAdd()}>Add Folder</Button>
 
             {status && (
                 <p style={{ color: "#888", marginTop: "0.5rem", fontSize: "0.8rem" }}>{status}</p>
@@ -80,7 +105,7 @@ export function LibraryManager({ onBack }: Props) {
             </ul>
 
             <div style={{ marginTop: "1rem" }}>
-                <Button variant="outline" disabled={selectedId === null} onClick={() => void handleRemove()}>Remove</Button>
+                <Button variant="outline" disabled={selectedId === null || indexing} onClick={() => void handleRemove()}>Remove</Button>
             </div>
         </div>
     );

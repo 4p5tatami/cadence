@@ -4,7 +4,8 @@ use cadence_core::{Library, LibraryRecord, OutputState, Player, PlayerMode, Trac
 use serde::Serialize;
 use std::path::PathBuf;
 use std::sync::{mpsc, Arc};
-use tauri::{Manager, State};
+use std::time::{Duration, Instant};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 pub(crate) enum PlayerMessage {
     Play(PathBuf, mpsc::SyncSender<Result<TrackInfo, String>>),
@@ -213,10 +214,37 @@ fn ws_address() -> String {
     format!("ws://{}:7878", ip)
 }
 
+/// Emitted while `index_library` runs, at most every `INDEX_PROGRESS_INTERVAL`.
+#[derive(Clone, Serialize)]
+struct IndexProgress {
+    path: String,
+    scanned: usize,
+}
+
+const INDEX_PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
+
+// Async so Tauri doesn't run it on the main thread: a scan over a large library
+// can take minutes, and a sync command would freeze the window for all of it.
 #[tauri::command]
-fn index_library(path: String, library: State<Arc<Library>>) -> Result<usize, String> {
-    library.index_directory(std::path::Path::new(&path))
-        .map_err(|e| e.to_string())
+async fn index_library(
+    path: String,
+    app: AppHandle,
+    library: State<'_, Arc<Library>>,
+) -> Result<usize, String> {
+    let library = Arc::clone(&library);
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut last_emit: Option<Instant> = None;
+        library.index_directory(std::path::Path::new(&path), |scanned| {
+            if last_emit.is_some_and(|t| t.elapsed() < INDEX_PROGRESS_INTERVAL) {
+                return;
+            }
+            last_emit = Some(Instant::now());
+            app.emit("index-progress", IndexProgress { path: path.clone(), scanned }).ok();
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]

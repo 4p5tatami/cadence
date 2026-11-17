@@ -71,99 +71,70 @@ impl Library {
     /// Walk `dir`, probe every audio file for tags + duration, and upsert into DB.
     /// Re-indexes from scratch on repeated calls (stale tracks are removed first).
     /// Returns the number of tracks inserted.
-    pub fn index_directory(&self, dir: &Path) -> Result<usize> {
-        let dir_str = dir.to_string_lossy().into_owned();
-        let conn = self.conn.lock().unwrap();
+    ///
+    /// `on_progress` is called with the running count of audio files probed so far.
+    ///
+    /// The slow part (walking the tree and reading tags from disk) runs without
+    /// holding the DB lock, so searches stay responsive while a scan is in progress.
+    /// All writes then happen in a single transaction: a failed re-index leaves the
+    /// previous contents of the library untouched.
+    pub fn index_directory(&self, dir: &Path, mut on_progress: impl FnMut(usize)) -> Result<usize> {
+        let scanned = scan_directory(dir, &mut on_progress);
 
-        conn.execute(
+        let dir_str = dir.to_string_lossy().into_owned();
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+
+        tx.execute(
             "INSERT OR IGNORE INTO libraries (path) VALUES (?1)",
             params![dir_str],
         )?;
-        let library_id: i64 = conn.query_row(
+        let library_id: i64 = tx.query_row(
             "SELECT id FROM libraries WHERE path = ?1",
             params![dir_str],
             |row| row.get(0),
         )?;
 
         // Clean up stale tracks for this library (FTS first, then tracks).
-        let stale_ids: Vec<i64> = {
-            let mut statement = conn.prepare("SELECT id FROM tracks WHERE library_id = ?1")?;
-            let ids: Vec<i64> =
-            statement.query_map(params![library_id], |r| r.get(0))?
-                .filter_map(|r| r.ok())
-                .collect();
-            ids
-        };
-        for id in &stale_ids {
-            conn.execute("DELETE FROM tracks_fts WHERE rowid = ?1", params![id])?;
-        }
-        conn.execute("DELETE FROM tracks WHERE library_id = ?1", params![library_id])?;
+        tx.execute(
+            "DELETE FROM tracks_fts WHERE rowid IN (SELECT id FROM tracks WHERE library_id = ?1)",
+            params![library_id],
+        )?;
+        tx.execute("DELETE FROM tracks WHERE library_id = ?1", params![library_id])?;
 
         let mut count = 0usize;
-
-        for entry in walkdir::WalkDir::new(dir)
-            .follow_links(true)
-            .into_iter()
-            .filter_map(|e| e.ok())
-            .filter(|e| e.file_type().is_file())
         {
-            let path = entry.path();
-            let ext = path
-                .extension()
-                .and_then(|e| e.to_str())
-                .unwrap_or("")
-                .to_lowercase();
-            if !AUDIO_EXTENSIONS.contains(&ext.as_str()) {
-                continue;
-            }
-
-            let (title, artist, duration_ms) = probe_track(path);
-
-            let filename = path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("")
-                .to_string();
-
-            // Filename fallback for title.
-            let title = title.unwrap_or_else(|| {
-                if filename.is_empty() { "Unknown Track".to_string() } else { filename.clone() }
-            });
-            let artist = artist.unwrap_or_else(|| UNKNOWN_ARTIST.to_string());
-
-            // Upsert artist, get its id.
-            conn.execute(
-                "INSERT OR IGNORE INTO artists (name) VALUES (?1)",
-                params![artist],
-            )?;
-            let artist_id: i64 = conn.query_row(
-                "SELECT id FROM artists WHERE name = ?1",
-                params![artist],
-                |r| r.get(0),
-            )?;
-
-            let rows = conn.execute(
+            let mut insert_artist = tx.prepare("INSERT OR IGNORE INTO artists (name) VALUES (?1)")?;
+            let mut select_artist = tx.prepare("SELECT id FROM artists WHERE name = ?1")?;
+            let mut insert_track = tx.prepare(
                 "INSERT OR IGNORE INTO tracks (library_id, path, title, artist_id, duration_ms)
                  VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![
-                    library_id,
-                    path.to_string_lossy().as_ref(),
-                    title,
-                    artist_id,
-                    duration_ms as i64,
-                ],
+            )?;
+            let mut insert_fts = tx.prepare(
+                "INSERT INTO tracks_fts(rowid, title, artist, filename) VALUES (?1, ?2, ?3, ?4)",
             )?;
 
-            if rows > 0 {
-                let track_id = conn.last_insert_rowid();
-                conn.execute(
-                    "INSERT INTO tracks_fts(rowid, title, artist, filename) VALUES (?1, ?2, ?3, ?4)",
-                    params![track_id, title, artist, filename],
-                )?;
-                count += 1;
+            for track in &scanned {
+                insert_artist.execute(params![track.artist])?;
+                let artist_id: i64 = select_artist.query_row(params![track.artist], |r| r.get(0))?;
+
+                let rows = insert_track.execute(params![
+                    library_id,
+                    track.path,
+                    track.title,
+                    artist_id,
+                    track.duration_ms as i64,
+                ])?;
+
+                if rows > 0 {
+                    let track_id = tx.last_insert_rowid();
+                    insert_fts.execute(params![track_id, track.title, track.artist, track.filename])?;
+                    count += 1;
+                }
             }
         }
 
+        tx.commit()?;
         Ok(count)
     }
 
@@ -237,21 +208,73 @@ impl Library {
     }
 
     pub fn delete_library(&self, id: i64) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
         // Clean up FTS entries before cascading delete removes the track rows.
-        let stale_ids: Vec<i64> = {
-            let mut stmt = conn.prepare("SELECT id FROM tracks WHERE library_id = ?1")?;
-            let ids: Vec<i64> = stmt.query_map(params![id], |r| r.get(0))?
-                .filter_map(|r| r.ok())
-                .collect();
-            ids
-        };
-        for track_id in &stale_ids {
-            conn.execute("DELETE FROM tracks_fts WHERE rowid = ?1", params![track_id])?;
-        }
-        conn.execute("DELETE FROM libraries WHERE id = ?1", params![id])?;
+        tx.execute(
+            "DELETE FROM tracks_fts WHERE rowid IN (SELECT id FROM tracks WHERE library_id = ?1)",
+            params![id],
+        )?;
+        tx.execute("DELETE FROM libraries WHERE id = ?1", params![id])?;
+        tx.commit()?;
         Ok(())
     }
+}
+
+/// A track read from disk, ready to be written to the DB.
+struct ScannedTrack {
+    path: String,
+    filename: String,
+    title: String,
+    artist: String,
+    duration_ms: u64,
+}
+
+/// Walk `dir` and probe every audio file. Touches only the filesystem, never the DB.
+fn scan_directory(dir: &Path, on_progress: &mut impl FnMut(usize)) -> Vec<ScannedTrack> {
+    let mut tracks = Vec::new();
+
+    for entry in walkdir::WalkDir::new(dir)
+        .follow_links(true)
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_file())
+    {
+        let path = entry.path();
+        let ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_lowercase();
+        if !AUDIO_EXTENSIONS.contains(&ext.as_str()) {
+            continue;
+        }
+
+        let (title, artist, duration_ms) = probe_track(path);
+
+        let filename = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_string();
+
+        // Filename fallback for title.
+        let title = title.unwrap_or_else(|| {
+            if filename.is_empty() { "Unknown Track".to_string() } else { filename.clone() }
+        });
+        let artist = artist.unwrap_or_else(|| UNKNOWN_ARTIST.to_string());
+
+        tracks.push(ScannedTrack {
+            path: path.to_string_lossy().into_owned(),
+            filename,
+            title,
+            artist,
+            duration_ms,
+        });
+        on_progress(tracks.len());
+    }
+
+    tracks
 }
 
 fn probe_track(path: &Path) -> (Option<String>, Option<String>, u64) {
@@ -269,4 +292,58 @@ fn probe_track(path: &Path) -> (Option<String>, Option<String>, u64) {
     let artist = tag.and_then(|t| t.artist().as_deref().map(String::from));
 
     (title, artist, duration_ms)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scratch_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "cadence-library-{}-{}",
+            name,
+            std::process::id(),
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn index_reports_progress_reindexes_and_deletes() {
+        let root = scratch_dir("index");
+        let music = root.join("music");
+        std::fs::create_dir_all(music.join("album")).unwrap();
+        // Untaggable "audio" files still get indexed with a filename title.
+        std::fs::write(music.join("first song.flac"), b"not really flac").unwrap();
+        std::fs::write(music.join("album/second song.MP3"), b"not really mp3").unwrap();
+        std::fs::write(music.join("cover.jpg"), b"not audio").unwrap();
+
+        let library = Library::open(&root.join("cadence.db")).unwrap();
+
+        let mut progress = Vec::new();
+        let count = library.index_directory(&music, |n| progress.push(n)).unwrap();
+        assert_eq!(count, 2);
+        assert_eq!(progress, vec![1, 2]);
+
+        let hits = library.search("second").unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].title, "second song");
+        assert_eq!(hits[0].artist, UNKNOWN_ARTIST);
+
+        // Re-indexing replaces stale rows instead of duplicating or dropping them.
+        std::fs::remove_file(music.join("first song.flac")).unwrap();
+        assert_eq!(library.index_directory(&music, |_| {}).unwrap(), 1);
+        assert!(library.search("first").unwrap().is_empty());
+        assert_eq!(library.search("second").unwrap().len(), 1);
+        assert_eq!(library.list_libraries().unwrap().len(), 1);
+
+        let id = library.list_libraries().unwrap()[0].id;
+        library.delete_library(id).unwrap();
+        assert!(library.list_libraries().unwrap().is_empty());
+        assert!(library.search("second").unwrap().is_empty());
+        assert!(library.all_track_paths().unwrap().is_empty());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }
