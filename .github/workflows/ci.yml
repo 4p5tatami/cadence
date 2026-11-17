@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  workflow_call:
+    inputs:
+      revision:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    name: Cadence checks
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.revision }}
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/cadence-mobile/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install FLTK and ALSA build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake pkg-config libasound2-dev libpango1.0-dev \
+            libx11-dev libxcursor-dev libxext-dev libxfixes-dev libxft-dev libxinerama-dev libxrender-dev
+      - name: Test Rust workspace
+        run: cargo test --workspace --locked
+      - name: Check Android TypeScript
+        working-directory: apps/cadence-mobile
+        run: |
+          npm ci --legacy-peer-deps
+          npx --no-install tsc --noEmit

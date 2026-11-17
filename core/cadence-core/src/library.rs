@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use rusqlite::{params, Connection};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Mutex;
 use crate::get_tagged_file;
 
@@ -13,6 +14,30 @@ const UNKNOWN_ARTIST: &str = "Unknown Artist";
 
 pub struct Library {
     conn: Mutex<Connection>,
+}
+
+const INDEX_PENDING: u8 = 0;
+const INDEX_CANCELLED: u8 = 1;
+const INDEX_COMMITTING: u8 = 2;
+
+#[derive(Default)]
+pub struct IndexCancellation(AtomicU8);
+
+impl IndexCancellation {
+    /// Returns whether cancellation won the race with committing the index.
+    pub fn cancel(&self) -> bool {
+        self.transition(INDEX_CANCELLED)
+    }
+
+    fn is_cancelled(&self) -> bool {
+        self.0.load(Ordering::Relaxed) == INDEX_CANCELLED
+    }
+
+    fn transition(&self, state: u8) -> bool {
+        self.0
+            .compare_exchange(INDEX_PENDING, state, Ordering::Relaxed, Ordering::Relaxed)
+            .is_ok()
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -78,11 +103,28 @@ impl Library {
     /// holding the DB lock, so searches stay responsive while a scan is in progress.
     /// All writes then happen in a single transaction: a failed re-index leaves the
     /// previous contents of the library untouched.
-    pub fn index_directory(&self, dir: &Path, mut on_progress: impl FnMut(usize)) -> Result<usize> {
-        let scanned = scan_directory(dir, &mut on_progress);
+    pub fn index_directory(&self, dir: &Path, on_progress: impl FnMut(usize)) -> Result<usize> {
+        self.index_directory_cancellable(dir, &IndexCancellation::default(), on_progress)
+            .map(|count| count.expect("the index was never cancelled"))
+    }
+
+    /// Returns `None` if cancelled. Use one cancellation handle per scan.
+    pub fn index_directory_cancellable(
+        &self,
+        dir: &Path,
+        cancellation: &IndexCancellation,
+        on_progress: impl FnMut(usize),
+    ) -> Result<Option<usize>> {
+        let scanned = scan_directory(dir, cancellation, on_progress);
+        if cancellation.is_cancelled() {
+            return Ok(None);
+        }
 
         let dir_str = dir.to_string_lossy().into_owned();
         let mut conn = self.conn.lock().unwrap();
+        if cancellation.is_cancelled() {
+            return Ok(None);
+        }
         let tx = conn.transaction()?;
 
         tx.execute(
@@ -115,6 +157,9 @@ impl Library {
             )?;
 
             for track in &scanned {
+                if cancellation.is_cancelled() {
+                    return Ok(None);
+                }
                 insert_artist.execute(params![track.artist])?;
                 let artist_id: i64 = select_artist.query_row(params![track.artist], |r| r.get(0))?;
 
@@ -134,8 +179,11 @@ impl Library {
             }
         }
 
+        if !cancellation.transition(INDEX_COMMITTING) {
+            return Ok(None);
+        }
         tx.commit()?;
-        Ok(count)
+        Ok(Some(count))
     }
 
     /// Full-text search over title and artist. Supports prefix matching.
@@ -231,15 +279,21 @@ struct ScannedTrack {
 }
 
 /// Walk `dir` and probe every audio file. Touches only the filesystem, never the DB.
-fn scan_directory(dir: &Path, on_progress: &mut impl FnMut(usize)) -> Vec<ScannedTrack> {
+fn scan_directory(
+    dir: &Path,
+    cancellation: &IndexCancellation,
+    mut on_progress: impl FnMut(usize),
+) -> Vec<ScannedTrack> {
     let mut tracks = Vec::new();
 
-    for entry in walkdir::WalkDir::new(dir)
-        .follow_links(true)
-        .into_iter()
-        .filter_map(|e| e.ok())
-        .filter(|e| e.file_type().is_file())
-    {
+    for entry in walkdir::WalkDir::new(dir).follow_links(true) {
+        if cancellation.is_cancelled() {
+            break;
+        }
+        let Ok(entry) = entry else { continue };
+        if !entry.file_type().is_file() {
+            continue;
+        }
         let path = entry.path();
         let ext = path
             .extension()
@@ -307,6 +361,39 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn cancelled_scan_preserves_existing_index_and_leaves_new_folders_unindexed() {
+        let root = scratch_dir("cancel");
+        let music = root.join("music");
+        std::fs::create_dir(&music).unwrap();
+        std::fs::write(music.join("original.flac"), b"original").unwrap();
+        let library = Library::open(&root.join("cadence.db")).unwrap();
+
+        let cancellation = IndexCancellation::default();
+        let result = library
+            .index_directory_cancellable(&music, &cancellation, |_| {
+                assert!(cancellation.cancel());
+            })
+            .unwrap();
+        assert_eq!(result, None);
+        assert!(library.list_libraries().unwrap().is_empty());
+
+        library.index_directory(&music, |_| {}).unwrap();
+        std::fs::remove_file(music.join("original.flac")).unwrap();
+        std::fs::write(music.join("replacement.flac"), b"replacement").unwrap();
+        let cancellation = IndexCancellation::default();
+        let result = library
+            .index_directory_cancellable(&music, &cancellation, |_| {
+                assert!(cancellation.cancel());
+            })
+            .unwrap();
+        assert_eq!(result, None);
+        assert_eq!(library.search("original").unwrap().len(), 1);
+        assert!(library.search("replacement").unwrap().is_empty());
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

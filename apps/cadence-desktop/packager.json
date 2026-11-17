@@ -1,0 +1,26 @@
+{
+  "name": "cadence-desktop",
+  "productName": "cadence-desktop",
+  "identifier": "com.cadence.desktop",
+  "version": "0.1.0",
+  "description": "Music library indexer and Android playback host",
+  "authors": ["Cadence contributors"],
+  "category": "Music",
+  "binariesDir": "../../target/release",
+  "outDir": "../../target/packages",
+  "binaries": [{ "path": "cadence-desktop", "main": true }],
+  "icons": ["assets/cadence.png", "assets/cadence.ico"],
+  "deb": {
+    "depends": [
+      "libasound2 | libasound2t64",
+      "libcairo2",
+      "libpango-1.0-0",
+      "libpangocairo-1.0-0",
+      "libx11-6",
+      "libxcursor1",
+      "libxfixes3",
+      "libxinerama1"
+    ],
+    "desktopTemplate": "assets/cadence-desktop.desktop"
+  }
+}

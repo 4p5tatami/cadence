@@ -24,9 +24,8 @@ modified. No frame index, full-file buffer, or temporary playback file is used.
 The same adapter handles Vorbis streams with a nonzero container origin, using
 bounded preroll for codec overlap history. Other streams retain Rodio decoding.
 
-Seek failures pause playback and are displayed, preserving the track for retry.
-The desktop serializes seeks, retains only the latest pending target, and holds
-the cursor until an authoritative post-seek status arrives.
+Seek failures pause playback and preserve the track for retry. The Android app
+sends seek commands over WebSocket and displays the playback status it receives.
 
 ## Validation
 
@@ -34,8 +33,7 @@ the cursor until an authoritative post-seek status arrives.
   with and without seek tables; header truncation, CRC, bounds, and overlay reads.
 - Committed synthetic Vorbis fixture: nonzero origin, rewind, repeated seeks.
 - Sink tests: paused seeks, resume, stop, and reuse without an output device.
-- Desktop tests: stale/out-of-order polls, replacement seeks, failed seeks,
-  failed status refreshes, and local/remote track changes.
+- WebSocket status tests cover playback errors and audio output recovery.
 - External file checks: reported FLAC, ordinary FLAC, PCM WAV, MP3 including Xing
   VBR, M4A, and synthetic AAC/M4A and Vorbis encoded with the installed VLC library.
 - Lossless sample comparisons allow one sample of rounding; external lossy
@@ -62,15 +60,12 @@ cancel automatic resumption; a new track or seek changes the recovery target.
 Decoder restoration failures remain visible and paused until the user retries
 Play or selects another track. Output absence never counts as track completion.
 
-Tauri and WebSocket track status include `output_state` (`ready`, `recovering`)
-and nullable `playback_error`. Device availability is independent of decoder
+WebSocket track status includes `output_state` (`ready`, `recovering`) and
+nullable `playback_error`. Device availability is independent of decoder
 errors: a failed track can have a ready output. `paused` retains user intent;
 WebSocket `playing` is false unless the output is ready, playback is requested,
-and there is no playback error. This
-freezes existing mobile clients without a protocol migration. The desktop uses
-the same condition for its clock and displays “Reconnecting audio output…”
-while waiting. No output picker or silent default-device-change detection is
-included.
+and there is no playback error. The Android app uses `playing` to freeze its
+playback clock while waiting.
 
 `Player` coordinates an output connection and playback manager. `OutputConnection::new` schedules
 the first connection attempt; `PlaybackManager::new` starts without a track.
@@ -84,14 +79,14 @@ does not prevent independent device recovery.
 
 Automated recovery tests use generated WAV audio and a manually consumed Rodio
 mixer, without an OS output device. They cover backoff, retired callbacks,
-position offsets, commands during outages, restoration errors, and remote and
-desktop clocks. Hardware acceptance remains manual: switch SoundBlaster outputs
+position offsets, commands during outages, restoration errors, and the remote
+clock. Hardware acceptance remains manual: switch SoundBlaster outputs
 while playing and paused, switch repeatedly, then disconnect/reconnect the
 device. Check that the track resumes at the saved position only when requested,
 the slider stays still during the outage, and no shuffle/replay occurs.
 
-Run `cargo test --workspace --locked` and `npm test` / `npm run build` in
-`apps/cadence-desktop`. External tests are opt-in:
+Run `cargo test --workspace --locked` from the repository root. External tests
+are opt-in:
 
 ```powershell
 $env:CADENCE_AUDIO_TEST_FILE = 'absolute path to an audio file'

@@ -20,7 +20,8 @@
     "plugins": [
       "expo-router",
       "expo-dev-client",
-      "expo-asset"
+      "expo-asset",
+      "./plugins/withAndroidRelease"
     ],
     "extra": {
       "router": {},

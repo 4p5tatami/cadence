@@ -1,0 +1,269 @@
+name: Release
+
+on:
+  pull_request_target:
+    branches: [main]
+    types: [closed]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.event.pull_request.merged && 'cadence-main-release' || github.run_id }}
+  queue: max
+
+jobs:
+  ci:
+    needs: version
+    uses: ./.github/workflows/ci.yml
+    with:
+      revision: ${{ needs.version.outputs.revision }}
+
+  version:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-24.04
+    outputs:
+      number: ${{ steps.version.outputs.number }}
+      revision: ${{ steps.version.outputs.revision }}
+    steps:
+      # The merged revision must be part of main before any job builds it.
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.merge_commit_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify merged commit and allocate version
+        id: version
+        run: |
+          if ! git merge-base --is-ancestor HEAD origin/main; then
+            echo '::error::The merged revision is no longer in main.'
+            exit 1
+          fi
+          printf 'revision=%s\n' "$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          import re
+          import subprocess
+          from pathlib import Path
+
+          baseline = json.loads(Path('apps/cadence-mobile/app.json').read_text())['expo']['version']
+          versions = [baseline, *[tag[1:] for tag in subprocess.check_output(
+              ['git', 'tag', '--list', 'v*'], text=True
+          ).splitlines()]]
+          pattern = r'(0|[1-9][0-9]*)\.(0|[1-9][0-9]?)\.(0|[1-9][0-9]?)'
+          if not re.fullmatch(pattern, baseline):
+              raise SystemExit(f'Invalid Android baseline version: {baseline}')
+          last = max(tuple(map(int, v.split('.'))) for v in versions if re.fullmatch(pattern, v))
+          number = last[0] * 10000 + last[1] * 100 + last[2] + 1
+          print(f'number={number // 10000}.{number // 100 % 100}.{number % 100}')
+          PY
+
+  desktop:
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-22.04
+            platform: linux
+            formats: deb,appimage
+          - runner: windows-latest
+            platform: windows
+            formats: nsis,wix
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.version.outputs.revision }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install Linux build and packaging dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake pkg-config libasound2-dev libpango1.0-dev \
+            libx11-dev libxcursor-dev libxext-dev libxfixes-dev libxft-dev libxinerama-dev libxrender-dev \
+            libfuse2 patchelf
+          cargo install --locked --version 0.21.1 cargo-generate-rpm
+      - name: Build desktop executable
+        env:
+          CADENCE_VERSION: ${{ needs.version.outputs.number }}
+        run: cargo build --locked --release -p cadence-desktop
+      - name: Install desktop packager
+        run: cargo install --locked --version 0.11.8 cargo-packager
+      - name: Package desktop executable
+        working-directory: apps/cadence-desktop
+        shell: bash
+        env:
+          VERSION: ${{ needs.version.outputs.number }}
+          FORMATS: ${{ matrix.formats }}
+        run: |
+          config=$(python -c 'import json, os; config = json.load(open("packager.json")); config["version"] = os.environ["VERSION"]; print(json.dumps(config))')
+          cargo packager --config "$config" --formats "$FORMATS"
+      - name: Package RPM
+        if: runner.os == 'Linux'
+        env:
+          VERSION: ${{ needs.version.outputs.number }}
+        run: |
+          cargo generate-rpm -p apps/cadence-desktop --set-metadata "version = \"$VERSION\"" \
+            --output "target/packages/cadence-desktop-$VERSION-1.x86_64.rpm"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-${{ matrix.platform }}
+          path: |
+            target/packages/*.deb
+            target/packages/*.rpm
+            target/packages/*.AppImage
+            target/packages/*.exe
+            target/packages/*.msi
+          if-no-files-found: error
+          overwrite: true
+
+  android:
+    needs: version
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: apps/cadence-mobile
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.version.outputs.revision }}
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/cadence-mobile/package-lock.json
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 17
+          cache: gradle
+          cache-dependency-path: apps/cadence-mobile/package-lock.json
+      - name: Restore Android signing key
+        id: signing
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: |
+          set -o pipefail
+          if [[ -z "$KEYSTORE_BASE64" || -z "$KEYSTORE_PASSWORD" ]]; then
+            echo '::error::Set ANDROID_KEYSTORE_BASE64 and ANDROID_KEYSTORE_PASSWORD in GitHub Actions secrets.'
+            exit 1
+          fi
+          umask 077
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/cadence.jks"
+          fingerprint=$(keytool -exportcert -keystore "$RUNNER_TEMP/cadence.jks" \
+            -storepass:env KEYSTORE_PASSWORD -alias cadence | sha256sum | cut -d ' ' -f 1)
+          printf 'fingerprint=%s\n' "$fingerprint" >> "$GITHUB_OUTPUT"
+      - name: Install Android SDK packages
+        run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0' 'ndk;27.1.12297006'
+      - name: Generate Android project
+        env:
+          VERSION: ${{ needs.version.outputs.number }}
+        run: |
+          npm ci --legacy-peer-deps
+          node -e '
+            const fs = require("node:fs");
+            const config = JSON.parse(fs.readFileSync("app.json", "utf8"));
+            config.expo.version = process.env.VERSION;
+            fs.writeFileSync("app.json", JSON.stringify(config, null, 2) + "\n");
+          '
+          npx expo prebuild --platform android --no-install
+      - name: Build signed APK
+        working-directory: apps/cadence-mobile/android
+        env:
+          ORG_GRADLE_PROJECT_CADENCE_UPLOAD_STORE_FILE: ${{ runner.temp }}/cadence.jks
+          ORG_GRADLE_PROJECT_CADENCE_UPLOAD_STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ORG_GRADLE_PROJECT_CADENCE_UPLOAD_KEY_ALIAS: cadence
+          ORG_GRADLE_PROJECT_CADENCE_UPLOAD_KEY_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: ./gradlew :app:assembleRelease --no-daemon -PreactNativeArchitectures=arm64-v8a
+      - name: Verify release signing certificate
+        env:
+          EXPECTED_FINGERPRINT: ${{ steps.signing.outputs.fingerprint }}
+          VERSION: ${{ needs.version.outputs.number }}
+        run: |
+          apk=android/app/build/outputs/apk/release/app-release.apk
+          certificates=$("$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --print-certs "$apk")
+          fingerprint=$(awk -F ': ' '/^Signer #1 certificate SHA-256 digest:/ {print $2}' <<< "$certificates")
+          if [[ "$fingerprint" != "$EXPECTED_FINGERPRINT" ]]; then
+            echo '::error::The APK signing certificate differs from the Cadence release key.'
+            exit 1
+          fi
+          mv "$apk" "cadence-v$VERSION-android-arm64.apk"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-android
+          path: apps/cadence-mobile/cadence-*-android-arm64.apk
+          if-no-files-found: error
+          overwrite: true
+
+  publish:
+    needs: [version, ci, desktop, android]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.version.outputs.revision }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: release-*
+          path: release-assets
+          merge-multiple: true
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: v${{ needs.version.outputs.number }}
+          REVISION: ${{ needs.version.outputs.revision }}
+        run: |
+          if ! git merge-base --is-ancestor "$REVISION" origin/main; then
+            echo '::error::The release revision is no longer in main.'
+            exit 1
+          fi
+          latest=$(gh release list --exclude-drafts --exclude-pre-releases \
+            --limit 100 --json isLatest,tagName --jq '.[] | select(.isLatest) | .tagName')
+          if [[ -n "$latest" ]] && git merge-base --is-ancestor "$REVISION" "refs/tags/$latest"; then
+            echo 'This revision or a newer revision has already been released.'
+            exit 0
+          fi
+
+          shopt -s globstar nullglob
+          assets=()
+          for extension in exe msi deb rpm AppImage apk; do
+            files=(release-assets/**/*."$extension")
+            if (( ${#files[@]} != 1 )); then
+              echo "::error::Expected exactly one $extension release asset."
+              exit 1
+            fi
+            assets+=("${files[0]}")
+          done
+
+          if git show-ref --verify --quiet "refs/tags/$TAG"; then
+            if [[ $(git rev-parse "refs/tags/$TAG^{commit}") != "$REVISION" ]]; then
+              echo "::error::$TAG already points to another revision. Rerun all jobs to allocate a new version."
+              exit 1
+            fi
+          else
+            gh api --method POST "repos/$GH_REPO/git/refs" -f "ref=refs/tags/$TAG" -f "sha=$REVISION" >/dev/null
+          fi
+
+          if is_draft=$(gh release view "$TAG" --json isDraft --jq .isDraft); then
+            if [[ "$is_draft" == false ]]; then
+              echo "Release $TAG is already published."
+              exit 0
+            fi
+            gh release upload "$TAG" "${assets[@]}" --clobber
+          else
+            gh release create "$TAG" "${assets[@]}" --draft --verify-tag \
+              --title "Cadence $TAG" --generate-notes
+          fi
+          gh release edit "$TAG" --draft=false --latest
