@@ -1,0 +1,214 @@
+# Builds Cadence for Windows, Linux and Android and publishes a GitHub Release.
+#
+# Trigger: push a version tag, e.g.
+#   git tag v0.2.0 && git push origin v0.2.0
+# The tag sets the version of every build (desktop installers and the APK), so
+# there's nothing to bump in the source first.
+#
+# Required repository secrets (Settings -> Secrets and variables -> Actions):
+#   ANDROID_KEYSTORE_BASE64    base64 of the Android upload keystore (.jks)
+#   ANDROID_KEYSTORE_PASSWORD  its password (key alias must be "cadence")
+# See README "Releases".
+#
+# Outputs attached to the release:
+#   Windows  Cadence installer (.exe, NSIS) and .msi
+#   Linux    .deb, .rpm, .AppImage
+#   Android  cadence-vX.Y.Z.apk
+
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write # create the release and upload files
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  # Creates the release as a draft; it's published only after every build succeeds.
+  create-release:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Parse version from tag
+        id: version
+        run: |
+          if [[ ! "$GITHUB_REF_NAME" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+            echo "::error::Tag must look like v1.2.3, got $GITHUB_REF_NAME"
+            exit 1
+          fi
+          if (( BASH_REMATCH[2] > 99 || BASH_REMATCH[3] > 99 )); then
+            echo "::error::Minor and patch must be <= 99 (Android versionCode scheme)"
+            exit 1
+          fi
+          echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1; then
+            echo "Release $GITHUB_REF_NAME already exists; builds will upload into it."
+          else
+            gh release create "$GITHUB_REF_NAME" --draft --verify-tag \
+              --title "Cadence $GITHUB_REF_NAME" --generate-notes
+          fi
+
+  desktop:
+    needs: create-release
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # 22.04 rather than 24.04: AppImages and .debs built against an older
+          # glibc run on more distros.
+          - os: ubuntu-22.04
+            bundles: deb,rpm,appimage
+          - os: windows-latest
+            bundles: nsis,msi
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential libasound2-dev \
+            pkg-config file librsvg2-dev patchelf
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/cadence-desktop/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+
+      - name: Install npm dependencies
+        working-directory: apps/cadence-desktop
+        run: npm ci
+
+      - name: Build installers
+        working-directory: apps/cadence-desktop
+        env:
+          VERSION: ${{ needs.create-release.outputs.version }}
+        run: |
+          echo "{\"version\": \"$VERSION\"}" > "$RUNNER_TEMP/release.conf.json"
+          npx tauri build --bundles ${{ matrix.bundles }} --config "$RUNNER_TEMP/release.conf.json"
+
+      - name: Upload to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          shopt -s nullglob
+          files=(target/release/bundle/{deb/*.deb,rpm/*.rpm,appimage/*.AppImage,nsis/*.exe,msi/*.msi})
+          if (( ${#files[@]} == 0 )); then
+            echo "::error::No installers found under target/release/bundle"
+            exit 1
+          fi
+          printf 'Uploading %s\n' "${files[@]}"
+          gh release upload "$GITHUB_REF_NAME" "${files[@]}" --clobber
+
+  android:
+    needs: create-release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: apps/cadence-mobile
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/cadence-mobile/package-lock.json
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Install npm dependencies
+        run: npm ci --legacy-peer-deps
+
+      - name: Set app version from tag
+        env:
+          VERSION: ${{ needs.create-release.outputs.version }}
+        run: |
+          node -e '
+            const fs = require("fs");
+            const app = JSON.parse(fs.readFileSync("app.json", "utf8"));
+            app.expo.version = process.env.VERSION;
+            fs.writeFileSync("app.json", JSON.stringify(app, null, 2) + "\n");
+          '
+
+      - name: Restore signing key
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: |
+          if [ -z "$KEYSTORE_BASE64" ] || [ -z "$KEYSTORE_PASSWORD" ]; then
+            echo "::error::ANDROID_KEYSTORE_BASE64 / ANDROID_KEYSTORE_PASSWORD secrets are not set; refusing to publish a debug-signed APK"
+            exit 1
+          fi
+          echo "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/upload.jks"
+
+      - name: Generate native project
+        run: npx expo prebuild --platform android --no-install
+
+      - name: Build release APK
+        working-directory: apps/cadence-mobile/android
+        env:
+          ORG_GRADLE_PROJECT_CADENCE_UPLOAD_STORE_FILE: ${{ runner.temp }}/upload.jks
+          ORG_GRADLE_PROJECT_CADENCE_UPLOAD_STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ORG_GRADLE_PROJECT_CADENCE_UPLOAD_KEY_ALIAS: cadence
+          ORG_GRADLE_PROJECT_CADENCE_UPLOAD_KEY_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        # arm64-v8a covers practically every phone from the last several years and
+        # keeps the APK small. Drop the -P flag for a universal APK.
+        run: ./gradlew assembleRelease -PreactNativeArchitectures=arm64-v8a --no-daemon
+
+      - name: Verify signature and upload to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          APK=android/app/build/outputs/apk/release/app-release.apk
+          APKSIGNER=$(ls -d "$ANDROID_HOME"/build-tools/*/ | sort -V | tail -n 1)apksigner
+          CERTS=$("$APKSIGNER" verify --print-certs "$APK")
+          echo "$CERTS"
+          if echo "$CERTS" | grep -q "CN=Android Debug"; then
+            echo "::error::APK is signed with the debug key"
+            exit 1
+          fi
+          OUT="cadence-$GITHUB_REF_NAME.apk"
+          mv "$APK" "$OUT"
+          gh release upload "$GITHUB_REF_NAME" "$OUT" --clobber
+
+  publish:
+    needs: [create-release, desktop, android]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: gh release edit "$GITHUB_REF_NAME" --draft=false --latest

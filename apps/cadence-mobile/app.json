@@ -20,13 +20,11 @@
     "plugins": [
       "expo-router",
       "expo-dev-client",
-      "expo-asset"
+      "expo-asset",
+      "./plugins/withAndroidRelease"
     ],
     "extra": {
-      "router": {},
-      "eas": {
-        "projectId": "dbc522e4-8d50-4d76-a73c-ab7183a4af61"
-      }
+      "router": {}
     }
   }
 }
