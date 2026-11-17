@@ -149,11 +149,26 @@ fn spawn_player_thread(lib_rx: mpsc::Receiver<Arc<Library>>) -> mpsc::Sender<Pla
     tx
 }
 
+// Commands that wait on the player thread, the DB lock or the disk are `async` and
+// do the waiting via `off_main_thread`. Tauri runs plain (non-async) commands on the
+// main thread, so a slow reply (opening a track on a spinning disk, a long index)
+// would freeze the window. Commands that only enqueue a message return immediately
+// and stay sync, which keeps them in the exact order the UI sent them.
+
+/// Runs blocking work on Tauri's blocking thread pool and awaits the result.
+async fn off_main_thread<T: Send + 'static>(
+    work: impl FnOnce() -> T + Send + 'static,
+) -> Result<T, String> {
+    tauri::async_runtime::spawn_blocking(work)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
-fn play(path: String, handle: State<PlayerHandle>) -> Result<TrackInfo, String> {
+async fn play(path: String, handle: State<'_, PlayerHandle>) -> Result<TrackInfo, String> {
     let (tx, rx) = mpsc::sync_channel(1);
     handle.tx.send(PlayerMessage::Play(PathBuf::from(path), tx)).ok();
-    rx.recv().map_err(|_| "Player thread died".to_string())?
+    off_main_thread(move || rx.recv().map_err(|_| "Player thread died".to_string())?).await?
 }
 
 #[tauri::command]
@@ -182,10 +197,10 @@ fn previous(handle: State<PlayerHandle>) {
 }
 
 #[tauri::command]
-fn seek(to_ms: u64, handle: State<PlayerHandle>) -> Result<(), String> {
+async fn seek(to_ms: u64, handle: State<'_, PlayerHandle>) -> Result<(), String> {
     let (tx, rx) = mpsc::sync_channel(1);
     handle.tx.send(PlayerMessage::Seek(to_ms, tx)).ok();
-    rx.recv().map_err(|_| "Player thread died".to_string())?
+    off_main_thread(move || rx.recv().map_err(|_| "Player thread died".to_string())?).await?
 }
 
 #[tauri::command]
@@ -194,10 +209,10 @@ fn set_mode(mode: PlayerMode, handle: State<PlayerHandle>) {
 }
 
 #[tauri::command]
-fn status(handle: State<PlayerHandle>) -> Option<StatusResponse> {
+async fn status(handle: State<'_, PlayerHandle>) -> Result<Option<StatusResponse>, String> {
     let (tx, rx) = mpsc::sync_channel(1);
     handle.tx.send(PlayerMessage::Status(tx)).ok();
-    rx.recv().ok().flatten()
+    off_main_thread(move || rx.recv().ok().flatten()).await
 }
 
 #[tauri::command]
@@ -223,8 +238,6 @@ struct IndexProgress {
 
 const INDEX_PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
 
-// Async so Tauri doesn't run it on the main thread: a scan over a large library
-// can take minutes, and a sync command would freeze the window for all of it.
 #[tauri::command]
 async fn index_library(
     path: String,
@@ -232,7 +245,7 @@ async fn index_library(
     library: State<'_, Arc<Library>>,
 ) -> Result<usize, String> {
     let library = Arc::clone(&library);
-    tauri::async_runtime::spawn_blocking(move || {
+    off_main_thread(move || {
         let mut last_emit: Option<Instant> = None;
         library.index_directory(std::path::Path::new(&path), |scanned| {
             if last_emit.is_some_and(|t| t.elapsed() < INDEX_PROGRESS_INTERVAL) {
@@ -242,24 +255,29 @@ async fn index_library(
             app.emit("index-progress", IndexProgress { path: path.clone(), scanned }).ok();
         })
     })
-    .await
-    .map_err(|e| e.to_string())?
+    .await?
     .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-fn search_tracks(query: String, library: State<Arc<Library>>) -> Result<Vec<TrackRecord>, String> {
-    library.search(&query).map_err(|e| e.to_string())
+async fn search_tracks(
+    query: String,
+    library: State<'_, Arc<Library>>,
+) -> Result<Vec<TrackRecord>, String> {
+    let library = Arc::clone(&library);
+    off_main_thread(move || library.search(&query).map_err(|e| e.to_string())).await?
 }
 
 #[tauri::command]
-fn list_libraries(library: State<Arc<Library>>) -> Result<Vec<LibraryRecord>, String> {
-    library.list_libraries().map_err(|e| e.to_string())
+async fn list_libraries(library: State<'_, Arc<Library>>) -> Result<Vec<LibraryRecord>, String> {
+    let library = Arc::clone(&library);
+    off_main_thread(move || library.list_libraries().map_err(|e| e.to_string())).await?
 }
 
 #[tauri::command]
-fn delete_library(id: i64, library: State<Arc<Library>>) -> Result<(), String> {
-    library.delete_library(id).map_err(|e| e.to_string())
+async fn delete_library(id: i64, library: State<'_, Arc<Library>>) -> Result<(), String> {
+    let library = Arc::clone(&library);
+    off_main_thread(move || library.delete_library(id).map_err(|e| e.to_string())).await?
 }
 
 fn local_ipv4() -> Option<std::net::Ipv4Addr> {

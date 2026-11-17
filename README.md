@@ -13,6 +13,20 @@ Index your local library on the desktop, then search and control playback from y
 - Auto-discovery of desktop app via mDNS
 - Real-time sync between desktop and phone (WebSocket, ~100ms latency)
 
+## Download
+
+Get the latest version from [Releases](https://github.com/4p5tatami/cadence/releases/latest):
+
+| Platform | File | How to install |
+|----------|------|----------------|
+| Windows | `cadence-desktop_X.Y.Z_x64-setup.exe` (or `.msi`) | Run it. SmartScreen may warn about an unrecognised app: *More info → Run anyway*. |
+| Linux (Debian/Ubuntu) | `cadence-desktop_X.Y.Z_amd64.deb` | `sudo apt install ./cadence-desktop_X.Y.Z_amd64.deb` |
+| Linux (Fedora/openSUSE) | `cadence-desktop-X.Y.Z-1.x86_64.rpm` | `sudo dnf install ./cadence-desktop-X.Y.Z-1.x86_64.rpm` |
+| Linux (any distro) | `cadence-desktop_X.Y.Z_amd64.AppImage` | `chmod +x` it, then run it. |
+| Android | `cadence-vX.Y.Z.apk` | Open it on the phone and allow installing from unknown sources. For automatic updates, add this repo's URL to [Obtainium](https://github.com/ImranR98/Obtainium). |
+
+The desktop app and the phone must be on the same Wi-Fi network.
+
 ## Project structure
 
 ```
@@ -32,15 +46,17 @@ apps/cadence-mobile      # Android companion app (React Native + Expo)
 
 ### Quick setup
 
-**Windows (PowerShell as Admin):**
+**Windows (regular PowerShell, admin not needed):**
 ```powershell
-.\setup.ps1
+powershell -ExecutionPolicy Bypass -File .\setup.ps1
 ```
 
-**Linux/macOS:**
+**Linux (Debian/Ubuntu):**
 ```bash
 ./setup.sh
 ```
+
+macOS and non-apt Linux distros aren't covered by the scripts; see [REQUIREMENTS.md](REQUIREMENTS.md).
 
 ### Run
 
@@ -48,6 +64,8 @@ apps/cadence-mobile      # Android companion app (React Native + Expo)
 cd apps/cadence-desktop
 npm run tauri dev
 ```
+
+The app opens in its own window. Don't open the `http://localhost:1420` URL from the terminal in a browser: that's the dev server feeding the window, and it can't reach the Rust backend.
 
 ### Usage
 
@@ -64,25 +82,46 @@ npm run tauri dev
 
 - Phone and PC on the **same Wi-Fi network**
 - Desktop app running
-- A development build installed on your device (see below) — Expo Go is **not** supported due to native modules (`react-native-zeroconf`)
+- The app installed from [Download](#download), or for development a development build (see below) — Expo Go is **not** supported due to native modules (`react-native-zeroconf`)
 
 ### Building the Android app
 
-The mobile app uses native modules and requires a custom development build via EAS:
+The app uses native modules, so it's built locally as a development build (an `.apk` containing the native code; your JS is served live from the dev server). This needs JDK 17 and the Android SDK, which the setup scripts install when run with `--android` / `-Android`:
+
+```bash
+./setup.sh --android                                                  # Linux
+powershell -ExecutionPolicy Bypass -File .\setup.ps1 -Android         # Windows
+```
+
+Then open a new terminal (or run `source ~/.bashrc`) so `JAVA_HOME` and `ANDROID_HOME` are set. Terminals that were already open won't have them, and Gradle fails with "SDK location not found". Manual install steps are in [REQUIREMENTS.md](REQUIREMENTS.md#android-app-build).
+
+**Option A: build and install over USB** (simplest). Enable *Developer options → USB debugging* on the phone, connect it, accept the prompt on the phone, then:
 
 ```bash
 cd apps/cadence-mobile
-npm install --legacy-peer-deps
-eas build --profile development --platform android
+npm run android        # = npx expo run:android
 ```
 
-Install the resulting `.apk` on your device, then start the dev server:
+This generates the native `android/` project, builds a debug `.apk` for your phone's CPU, installs it, and starts the dev server. The first build takes several minutes; later builds are incremental.
+
+**Option B: build an `.apk` file** to copy to the phone yourself:
+
+```bash
+cd apps/cadence-mobile
+npx expo prebuild --platform android
+cd android
+./gradlew assembleDebug -PreactNativeArchitectures=arm64-v8a      # Windows: .\gradlew.bat ...
+```
+
+The APK is written to `android/app/build/outputs/apk/debug/app-debug.apk`. Drop `-PreactNativeArchitectures=...` to build for every CPU type (slower, larger file). After installing it, start the dev server from `apps/cadence-mobile`:
 
 ```bash
 npx expo start --clear
 ```
 
-Open the Cadence app on your device and scan the QR code, or connect via the dev server URL.
+Open the Cadence app on your device; it lists dev servers on your network, or scan the QR code.
+
+You only need to rebuild the `.apk` when native code changes (adding or upgrading a package with native code, or editing `app.json`). JS/TS changes just need the dev server.
 
 ### Usage
 
@@ -98,15 +137,61 @@ Open the Cadence app on your device and scan the QR code, or connect via the dev
 ### Automated setup
 
 ```powershell
-# Windows (PowerShell as Admin)
-.\setup.ps1
+# Windows (regular PowerShell)
+powershell -ExecutionPolicy Bypass -File .\setup.ps1
 ```
 
 ```bash
-# Linux/macOS
+# Linux (Debian/Ubuntu)
 ./setup.sh
 ```
 
 ### Manual setup
 
 See [REQUIREMENTS.md](REQUIREMENTS.md) for detailed platform-specific instructions.
+
+## Releases
+
+Pushing a version tag runs the [Release workflow](.github/workflows/release.yml) on GitHub Actions. It builds the Windows installers (`.exe`, `.msi`), the Linux packages (`.deb`, `.rpm`, `.AppImage`) and a signed Android APK, and publishes them together as a GitHub Release. The release stays a draft until every build has succeeded.
+
+### One-time setup
+
+The only setup is the Android signing key. Android only installs an update if it's signed with the same key as the installed app, so **back up the key file and its password outside this PC**. If they're lost, everyone has to uninstall and reinstall the app.
+
+1. Create the key (skip if you already have `~/keys/cadence-upload.jks`). Everything in `-dname` ends up in the certificate and is readable from the APK by anyone:
+   ```bash
+   mkdir -p ~/keys
+   keytool -genkeypair -storetype PKCS12 -keystore ~/keys/cadence-upload.jks \
+     -alias cadence -keyalg RSA -keysize 4096 -validity 36500 -dname "CN=Cadence"
+   ```
+2. Encode it for GitHub:
+   ```bash
+   base64 -w0 ~/keys/cadence-upload.jks > ~/keys/cadence-upload.jks.b64
+   ```
+3. On GitHub, open the repo's *Settings → Secrets and variables → Actions → New repository secret* and add:
+
+   | Name | Value |
+   |------|-------|
+   | `ANDROID_KEYSTORE_BASE64` | the contents of `~/keys/cadence-upload.jks.b64` |
+   | `ANDROID_KEYSTORE_PASSWORD` | the keystore password |
+
+4. Delete `~/keys/cadence-upload.jks.b64` (keep the `.jks`).
+
+Desktop builds need no secrets. The installers aren't code-signed, so Windows shows a SmartScreen warning on first run.
+
+### Making a release
+
+```bash
+git checkout main && git pull
+git tag v0.2.0
+git push origin v0.2.0
+```
+
+The tag sets the version of every build, so there's nothing to bump in the source. It must look like `vMAJOR.MINOR.PATCH`, with minor and patch at most 99. The builds take about 15–25 minutes; follow them in the repo's **Actions** tab. When all jobs pass, the release appears under **Releases** with every file attached.
+
+If a job fails, fix the cause and use **Re-run failed jobs** on the workflow run. Builds upload into the existing draft, so nothing is duplicated.
+
+### Building release files locally
+
+- **Desktop:** `cd apps/cadence-desktop && npx tauri build`. Installers are written to `target/release/bundle/` at the repo root. Each OS builds only its own installers.
+- **Android:** in `apps/cadence-mobile/android` (after `npx expo prebuild --platform android`), run `./gradlew assembleRelease` with the Gradle properties `CADENCE_UPLOAD_STORE_FILE`, `CADENCE_UPLOAD_STORE_PASSWORD`, `CADENCE_UPLOAD_KEY_ALIAS=cadence` and `CADENCE_UPLOAD_KEY_PASSWORD` set (for example in `~/.gradle/gradle.properties`). Without them the APK is signed with the public debug key: fine for testing, never for sharing.
