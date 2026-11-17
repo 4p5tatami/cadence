@@ -20,7 +20,7 @@ If Android prompts you to allow installation, grant **Allow from this source** t
 
 ## Index and play music
 
-1. Open **Music Library Indexer** on your computer and select **Add Folder**. Cadence scans the selected folder and its subfolders. Select **Cancel** in the popup to discard the current scan. The trash button removes a folder from the index and keeps the music files on disk.
+1. Open **Cadence** on your computer and select **Add Folder**. Cadence scans the selected folder and its subfolders. Select **Cancel** in the popup to discard the current scan. The trash button removes a folder from the index and keeps the music files on disk.
 2. Connect the phone and computer to the **same local network** and leave the desktop app open.
 3. Open Cadence on Android and tap your computer under **Available devices**.
 4. Search the indexed library and tap a track to play it on your computer. Use the now-playing bar to pause, resume, stop, skip, or seek.
