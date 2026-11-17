@@ -23,21 +23,14 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: |
-            apps/cadence-desktop/package-lock.json
-            apps/cadence-mobile/package-lock.json
+          cache-dependency-path: apps/cadence-mobile/package-lock.json
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: Install Tauri and ALSA dependencies
+      - name: Install FLTK and ALSA build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev libasound2-dev librsvg2-dev
-      - name: Test and build desktop frontend
-        working-directory: apps/cadence-desktop
-        run: |
-          npm ci
-          npm test
-          npm run build
+          sudo apt-get install -y build-essential cmake pkg-config libasound2-dev libpango1.0-dev \
+            libx11-dev libxcursor-dev libxext-dev libxfixes-dev libxft-dev libxinerama-dev libxrender-dev
       - name: Test Rust workspace
         run: cargo test --workspace --locked
       - name: Check Android TypeScript

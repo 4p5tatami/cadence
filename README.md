@@ -17,27 +17,27 @@ Index your local library on the desktop, then search and control playback from y
 
 ```
 core/cadence-core        # Audio engine (rodio + symphonia) + library DB (SQLite/FTS5)
-apps/cadence-desktop     # Desktop app (Tauri 2 + React + TypeScript)
-apps/cadence-mobile      # Android companion app (React Native + Expo)
+apps/cadence-desktop     # Rust and FLTK desktop indexer and playback host
+apps/cadence-mobile      # Android companion app (React Native, TypeScript, Expo)
 ```
 
 ## Desktop app
 
 ### Requirements
 
-- **Node.js** 20.19+ or 22.12+
-- **Rust** (latest stable)
-- **Windows**: Visual Studio Build Tools + WebView2 (usually pre-installed)
-- **Linux**: WebKit2GTK, ALSA/PipeWire — see [REQUIREMENTS.md](REQUIREMENTS.md)
+- Rust stable, CMake 3.28+, and a C++ compiler
+- Windows with Visual Studio Build Tools, or Linux with X11 or XWayland and ALSA development libraries
+
+See [REQUIREMENTS.md](REQUIREMENTS.md) for the platform-specific setup.
 
 ### Quick setup
 
-**Windows (PowerShell as Admin):**
+**Windows (PowerShell)**
 ```powershell
 .\setup.ps1
 ```
 
-**Linux/macOS:**
+**Linux (Debian or Ubuntu)**
 ```bash
 ./setup.sh
 ```
@@ -45,18 +45,16 @@ apps/cadence-mobile      # Android companion app (React Native + Expo)
 ### Run
 
 ```bash
-cd apps/cadence-desktop
-npm run tauri dev
+cargo run --locked -p cadence-desktop
 ```
 
 ### Usage
 
-1. Click **☰** (top-right) → **Index libraries** to open the library manager
-2. Click **Add Folder** and select a folder containing music files — Cadence scans it recursively
-3. Back on the main screen, use the search bar to find tracks
-4. Click a track to play it
-5. Use the progress bar to seek, and the Pause/Resume/Stop/Prev/Next buttons to control playback
-6. The desktop app advertises itself on your local network automatically
+1. Open **Music Library Indexer** and select **Add Folder**. Cadence scans the selected folder and its subfolders in the background.
+2. Use the trash button to remove a folder from the index. The music files stay on disk.
+3. Leave the desktop app open and connect from the Android app to search the library and control playback.
+
+Cadence reads the existing library database at `%APPDATA%\com.cadence.desktop\cadence.db` on Windows and `${XDG_DATA_HOME:-$HOME/.local/share}/com.cadence.desktop/cadence.db` on Linux.
 
 ## Android app
 
@@ -64,6 +62,7 @@ npm run tauri dev
 
 - Phone and PC on the **same Wi-Fi network**
 - Desktop app running
+- Node.js 22.12+ and npm for Android development
 - A development build installed on your device (see below) — Expo Go is **not** supported due to native modules (`react-native-zeroconf`)
 
 ### Building the Android app
@@ -72,7 +71,7 @@ The mobile app uses native modules and requires a custom development build via E
 
 ```bash
 cd apps/cadence-mobile
-npm install --legacy-peer-deps
+npm ci --legacy-peer-deps
 eas build --profile development --platform android
 ```
 
@@ -95,25 +94,11 @@ Open the Cadence app on your device and scan the QR code, or connect via the dev
 
 ## Development
 
-### Automated setup
-
-```powershell
-# Windows (PowerShell as Admin)
-.\setup.ps1
-```
-
-```bash
-# Linux/macOS
-./setup.sh
-```
-
-### Manual setup
-
-See [REQUIREMENTS.md](REQUIREMENTS.md) for detailed platform-specific instructions.
+Run `cargo test --workspace --locked` from the repository root. For the Android TypeScript check, run `npx --no-install tsc --noEmit` from `apps/cadence-mobile` after installing its npm dependencies.
 
 ## GitHub releases
 
-CI runs the Rust workspace tests, desktop frontend tests and build, and Android TypeScript check on pull requests to `main` and pushes to `main`. A `vMAJOR.MINOR.PATCH` tag runs those checks again and publishes one GitHub Release with Windows x64 installers, Linux x64 packages, and a signed Android ARM64 APK.
+CI runs the Rust workspace tests and the Android TypeScript check on pull requests to `main` and pushes to `main`. A new `vMAJOR.MINOR.PATCH` tag runs those checks again and publishes one GitHub Release with Windows x64 `.exe` and `.msi` installers, Linux x64 `.deb`, `.rpm`, and AppImage packages, and a signed Android ARM64 APK.
 
 ### One-time setup
 

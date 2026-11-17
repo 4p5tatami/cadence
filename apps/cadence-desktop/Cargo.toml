@@ -1,0 +1,26 @@
+[package]
+name = "cadence-desktop"
+version = "0.1.0"
+description = "Music library indexer and Android playback host"
+edition = "2021"
+
+[dependencies]
+cadence-core = { path = "../../core/cadence-core" }
+dirs = "6"
+fltk = "1.5"
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+gethostname = "0.4"
+mdns-sd = "0.11"
+rand = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "sync", "time"] }
+tokio-tungstenite = { version = "0.24", default-features = false, features = ["handshake"] }
+
+[package.metadata.generate-rpm]
+license = "Unspecified"
+assets = [
+  { source = "target/release/cadence-desktop", dest = "/usr/bin/cadence-desktop", mode = "755" },
+  { source = "assets/cadence-desktop.desktop", dest = "/usr/share/applications/cadence-desktop.desktop", mode = "644" },
+  { source = "assets/cadence.png", dest = "/usr/share/icons/hicolor/128x128/apps/cadence-desktop.png", mode = "644" },
+]

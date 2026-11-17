@@ -7,10 +7,10 @@ use tokio::net::TcpListener;
 use tokio::sync::broadcast;
 use tokio_tungstenite::tungstenite::Message;
 
+use crate::player::{PlayerMessage, StatusResponse};
 use cadence_core::{Library, OutputState, PlayerMode, TrackRecord};
-use crate::{PlayerMessage, StatusResponse};
 
-/// State broadcast sent to all clients every 500 ms.
+/// State broadcast sent to all clients every 100 ms.
 #[derive(Serialize)]
 struct StateMsg<'a> {
     #[serde(rename = "type")]
@@ -66,7 +66,7 @@ fn state_json(status: &StatusResponse) -> String {
         artist: status.artist.as_deref(),
         duration_ms: status.duration_ms,
         position_ms: status.position_ms,
-        playing: !status.paused && status.output_state == OutputState::Ready && status.playback_error.is_none(),
+        playing: status.is_playing(),
         output_state: status.output_state,
         playback_error: status.playback_error.as_deref(),
         snapshot_at_ms: now_ms(),
@@ -75,49 +75,15 @@ fn state_json(status: &StatusResponse) -> String {
     serde_json::to_string(&msg).unwrap()
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn remote_clock_stops_during_recovery_and_errors() {
-        let mut status = StatusResponse {
-            path: "track.wav".into(), duration_ms: 60000, position_ms: 30000,
-            paused: false, output_state: OutputState::Recovering,
-            playback_error: None, title: None, artist: None, mode: PlayerMode::Default,
-        };
-        for (state, paused, playing) in [
-            (OutputState::Recovering, false, false),
-            (OutputState::Ready, true, false),
-            (OutputState::Ready, false, true),
-        ] {
-            status.output_state = state;
-            status.paused = paused;
-            let wire: serde_json::Value = serde_json::from_str(&state_json(&status)).unwrap();
-            assert_eq!(wire["playing"], playing);
-            assert_eq!(wire["position_ms"], 30000);
-            assert_eq!(wire["output_state"], serde_json::to_value(state).unwrap());
-            assert_eq!(wire["type"], "state");
-        }
-        status.playback_error = Some("Cannot restore playback position".into());
-        let wire: serde_json::Value = serde_json::from_str(&state_json(&status)).unwrap();
-        assert_eq!(wire["playback_error"], "Cannot restore playback position");
-        assert_eq!(wire["output_state"], "ready");
-        assert_eq!(wire["playing"], false);
-    }
-}
-
 pub async fn serve(
+    listener: TcpListener,
     player_tx: mpsc::Sender<PlayerMessage>,
     library: Arc<Library>,
+    mut on_playback: impl FnMut(bool, Option<&StatusResponse>) + Send + 'static,
 ) {
-    let listener = TcpListener::bind("0.0.0.0:7878").await
-        .expect("Failed to bind WS server on port 7878");
-
     let (broadcast_tx, _) = broadcast::channel::<String>(32);
     let broadcast_tx = Arc::new(broadcast_tx);
 
-    // Poll player every 500 ms and broadcast state to all clients.
     {
         let ptx = player_tx.clone();
         let btx = broadcast_tx.clone();
@@ -129,12 +95,16 @@ pub async fn serve(
                     let (tx, rx) = mpsc::sync_channel(1);
                     ptx2.send(PlayerMessage::Status(tx)).ok();
                     rx.recv().ok().flatten()
-                }).await;
+                })
+                .await;
 
-                match result {
-                    Ok(Some(status)) => { btx.send(state_json(&status)).ok(); }
-                    Ok(None) => { btx.send(r#"{"type":"stopped"}"#.to_string()).ok(); }
-                    _ => {}
+                if let Ok(status) = result {
+                    on_playback(btx.receiver_count() > 0, status.as_ref());
+                    let wire = match status {
+                        Some(status) => state_json(&status),
+                        None => r#"{"type":"stopped"}"#.to_string(),
+                    };
+                    btx.send(wire).ok();
                 }
             }
         });
@@ -143,10 +113,13 @@ pub async fn serve(
     while let Ok((stream, _addr)) = listener.accept().await {
         let ptx = player_tx.clone();
         let lib = Arc::clone(&library);
-        let mut brx = broadcast_tx.subscribe();
+        let btx = broadcast_tx.clone();
 
         tokio::spawn(async move {
-            let Ok(ws) = tokio_tungstenite::accept_async(stream).await else { return };
+            let Ok(ws) = tokio_tungstenite::accept_async(stream).await else {
+                return;
+            };
+            let mut brx = btx.subscribe();
             let (mut write, mut read) = ws.split();
 
             loop {
@@ -162,12 +135,10 @@ pub async fn serve(
                                     ClientMsg::Next     => { ptx.send(PlayerMessage::Next).ok(); }
                                     ClientMsg::Previous => { ptx.send(PlayerMessage::Previous).ok(); }
                                     ClientMsg::Seek { to_ms } => {
-                                        let (tx, _) = mpsc::sync_channel(1);
-                                        ptx.send(PlayerMessage::Seek(to_ms, tx)).ok();
+                                        ptx.send(PlayerMessage::Seek(to_ms)).ok();
                                     }
                                     ClientMsg::Play { path } => {
-                                        let (tx, _) = mpsc::sync_channel(1);
-                                        ptx.send(PlayerMessage::Play(path.into(), tx)).ok();
+                                        ptx.send(PlayerMessage::Play(path.into())).ok();
                                     }
                                     ClientMsg::Search { query } => {
                                         let lib2 = Arc::clone(&lib);
@@ -188,7 +159,7 @@ pub async fn serve(
                                     }
                                 }
                             }
-                            Some(Ok(Message::Close(_))) | None => break,
+                            Some(Ok(Message::Close(_)) | Err(_)) | None => break,
                             _ => {}
                         }
                     }
@@ -202,5 +173,43 @@ pub async fn serve(
                 }
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn remote_clock_stops_during_recovery_and_errors() {
+        let mut status = StatusResponse {
+            path: "track.wav".into(),
+            duration_ms: 60000,
+            position_ms: 30000,
+            paused: false,
+            output_state: OutputState::Recovering,
+            playback_error: None,
+            title: None,
+            artist: None,
+            mode: PlayerMode::Default,
+        };
+        for (state, paused, playing) in [
+            (OutputState::Recovering, false, false),
+            (OutputState::Ready, true, false),
+            (OutputState::Ready, false, true),
+        ] {
+            status.output_state = state;
+            status.paused = paused;
+            let wire: serde_json::Value = serde_json::from_str(&state_json(&status)).unwrap();
+            assert_eq!(wire["playing"], playing);
+            assert_eq!(wire["position_ms"], 30000);
+            assert_eq!(wire["output_state"], serde_json::to_value(state).unwrap());
+            assert_eq!(wire["type"], "state");
+        }
+        status.playback_error = Some("Cannot restore playback position".into());
+        let wire: serde_json::Value = serde_json::from_str(&state_json(&status)).unwrap();
+        assert_eq!(wire["playback_error"], "Cannot restore playback position");
+        assert_eq!(wire["output_state"], "ready");
+        assert_eq!(wire["playing"], false);
     }
 }
