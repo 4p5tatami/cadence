@@ -1,73 +1,44 @@
 # Cadence
 
-Cross-platform music player with Android remote control.
-Index your local library on the desktop, then search and control playback from your phone — like Spotify Connect, but for local lossless files.
+Cross-platform music player with Android remote control. Index your local music library on a Windows or Linux computer, then search and control playback from your phone. Audio plays through the computer’s speakers or headphones.
 
-## Features
+Cadence indexes common music formats including FLAC, WAV, MP3, AAC, M4A, and Ogg Vorbis.
 
-- Plays FLAC, WAV, OGG, MP3, M4A, AAC, Opus, WMA
-- Frame-accurate seek (via symphonia)
-- SQLite music library with full-text search
-- Previous / Next track with shuffle and navigable history
-- Android companion app — search, play, pause, seek, skip over Wi-Fi
-- Auto-discovery of desktop app via mDNS
-- Real-time sync between desktop and phone (WebSocket, ~100ms latency)
+## Download and install
 
-## Project structure
+Open the [latest GitHub release](https://github.com/4p5tatami/cadence/releases/latest) and expand **Assets**. Download the desktop package for your computer and the Android APK from the same release.
 
-```
-core/cadence-core        # Audio engine (rodio + symphonia) + library DB (SQLite/FTS5)
-apps/cadence-desktop     # Rust and FLTK desktop indexer and playback host
-apps/cadence-mobile      # Android companion app (React Native, TypeScript, Expo)
-```
+| Platform | Release asset | Installation |
+| --- | --- | --- |
+| Windows x64 | `.exe` or `.msi` | Run either installer, then open the installed app from the Start menu. |
+| Linux x64, Debian or Ubuntu | `.deb` | Open the package with your system’s package installer. |
+| Linux x64, Fedora | `.rpm` | Open the package with your system’s package installer. |
+| Linux x64, AppImage | `.AppImage` | Mark the file as executable, then open it. |
+| Android ARM64 | `cadence-v<version>-android-arm64.apk` | Open the APK on your phone and tap **Install**. |
 
-## Desktop app
+If Android prompts you to allow installation, grant **Allow from this source** to the browser or file manager that opened the APK. [Android installation help](https://support.google.com/pixelphone/answer/7391672?hl=en)
 
-### Requirements
+## Index and play music
 
-- Rust stable, CMake 3.28+, and a C++ compiler
-- Windows with Visual Studio Build Tools, or Linux with X11 or XWayland and ALSA development libraries
+1. Open **Music Library Indexer** on your computer and select **Add Folder**. Cadence scans the selected folder and its subfolders. Select **Cancel** in the popup to discard the current scan. The trash button removes a folder from the index and keeps the music files on disk.
+2. Connect the phone and computer to the **same local network** and leave the desktop app open.
+3. Open Cadence on Android and tap your computer under **Available devices**.
+4. Search the indexed library and tap a track to play it on your computer. Use the now-playing bar to pause, resume, stop, skip, or seek.
 
-See [REQUIREMENTS.md](REQUIREMENTS.md) for the platform-specific setup.
+If your computer doesn’t appear, check that the indexer is open and both devices are on the same network. If the desktop firewall asks about Cadence, allow it on your private network.
 
-### Quick setup
+## Development
 
-**Windows (PowerShell)**
-```powershell
-.\setup.ps1
-```
-
-**Linux (Debian or Ubuntu)**
-```bash
-./setup.sh
-```
-
-### Run
+See [REQUIREMENTS.md](REQUIREMENTS.md) for desktop build dependencies and setup. Run these commands from the repository root.
 
 ```bash
 cargo run --locked -p cadence-desktop
+cargo test --workspace --locked
 ```
 
-### Usage
+### Android app
 
-1. Open **Music Library Indexer** and select **Add Folder**. Cadence scans the selected folder and its subfolders in the background.
-2. Use the trash button to remove a folder from the index. The music files stay on disk.
-3. Leave the desktop app open and connect from the Android app to search the library and control playback.
-
-Cadence reads the existing library database at `%APPDATA%\com.cadence.desktop\cadence.db` on Windows and `${XDG_DATA_HOME:-$HOME/.local/share}/com.cadence.desktop/cadence.db` on Linux.
-
-## Android app
-
-### Requirements
-
-- Phone and PC on the **same Wi-Fi network**
-- Desktop app running
-- Node.js 22.12+ and npm for Android development
-- A development build installed on your device (see below) — Expo Go is **not** supported due to native modules (`react-native-zeroconf`)
-
-### Building the Android app
-
-The mobile app uses native modules and requires a custom development build via EAS:
+For development, build the Android app with EAS so it can use native network discovery.
 
 ```bash
 cd apps/cadence-mobile
@@ -75,51 +46,6 @@ npm ci --legacy-peer-deps
 eas build --profile development --platform android
 ```
 
-Install the resulting `.apk` on your device, then start the dev server:
+Install the development APK, then run `npx expo start --clear` and open the app on your phone. Run `npx --no-install tsc --noEmit` from `apps/cadence-mobile` to check TypeScript.
 
-```bash
-npx expo start --clear
-```
-
-Open the Cadence app on your device and scan the QR code, or connect via the dev server URL.
-
-### Usage
-
-1. Open the app — it automatically scans for Cadence desktop instances on your network
-2. Tap a discovered device to connect, or enter a WebSocket address manually (e.g. `ws://192.168.1.x:7878`)
-3. Search for tracks — results come from the desktop's indexed library
-4. Tap a track to play it on the desktop
-5. Control playback from the now-playing bar: Pause/Resume/Stop, Prev/Next, and tap the progress bar to seek
-6. If the connection drops, the app reconnects automatically
-
-## Development
-
-Run `cargo test --workspace --locked` from the repository root. For the Android TypeScript check, run `npx --no-install tsc --noEmit` from `apps/cadence-mobile` after installing its npm dependencies.
-
-## GitHub releases
-
-Merging a pull request into `main` runs the Rust workspace tests and Android TypeScript check alongside the release builds. If all jobs pass, the workflow publishes Windows x64 `.exe` and `.msi` installers, Linux x64 `.deb`, `.rpm`, and AppImage packages, and a signed Android ARM64 APK in one GitHub Release.
-
-### One-time setup
-
-1. Use Cadence's existing Android release keystore if you have one. Android updates require the same signing key. For a first release, generate one outside the repository with JDK 17. Use the alias `cadence` and the same password for the keystore and the key. Keep a backup of the keystore and its password.
-
-   ```bash
-   keytool -genkeypair -v -storetype PKCS12 -keystore "$HOME/cadence-release.jks" \
-     -alias cadence -keyalg RSA -keysize 2048 -validity 10000
-   ```
-
-2. In **Settings → Secrets and variables → Actions**, set `ANDROID_KEYSTORE_BASE64` to the base64-encoded keystore and `ANDROID_KEYSTORE_PASSWORD` to its password. With an authenticated GitHub CLI, run these commands from the repository and enter the password when prompted. Adjust the keystore path if you are reusing one.
-
-   ```bash
-   base64 < "$HOME/cadence-release.jks" | tr -d '\n' | gh secret set ANDROID_KEYSTORE_BASE64
-   gh secret set ANDROID_KEYSTORE_PASSWORD
-   ```
-
-### Deploy from main
-
-1. Merge a pull request into `main` and open **Actions → Release**. The workflow builds the merged commit and assigns the next version above the existing version tags and the Android app's configured version.
-2. When all checks and builds pass, the workflow tags that commit and publishes the new **Latest** release. If a step fails before publication, the previous release stays live. The merge commit remains in `main`.
-3. To retry a failed job, use **Re-run failed jobs** in Actions. For a code fix, merge a new pull request.
-
-If a branch rule requires **Cadence checks** before merging, remove that required check when switching to this workflow. The check now runs after the merge.
+The [release workflow](.github/workflows/release.yml) publishes a new release after a pull request merges into `main` and all checks and builds pass. Android release builds use the `ANDROID_KEYSTORE_BASE64` and `ANDROID_KEYSTORE_PASSWORD` repository secrets.
