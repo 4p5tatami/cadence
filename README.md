@@ -110,3 +110,37 @@ Open the Cadence app on your device and scan the QR code, or connect via the dev
 ### Manual setup
 
 See [REQUIREMENTS.md](REQUIREMENTS.md) for detailed platform-specific instructions.
+
+## GitHub releases
+
+CI runs the Rust workspace tests, desktop frontend tests and build, and Android TypeScript check on pull requests to `main` and pushes to `main`. A `vMAJOR.MINOR.PATCH` tag runs those checks again and publishes one GitHub Release with Windows x64 installers, Linux x64 packages, and a signed Android ARM64 APK.
+
+### One-time setup
+
+1. Use Cadence's existing Android release keystore if you have one. Android updates require the same signing key. For a first release, generate one outside the repository with JDK 17. Use the alias `cadence` and the same password for the keystore and the key. Keep a backup of the keystore and its password.
+
+   ```bash
+   keytool -genkeypair -v -storetype PKCS12 -keystore "$HOME/cadence-release.jks" \
+     -alias cadence -keyalg RSA -keysize 2048 -validity 10000
+   ```
+
+2. In **Settings → Secrets and variables → Actions**, set `ANDROID_KEYSTORE_BASE64` to the base64-encoded keystore and `ANDROID_KEYSTORE_PASSWORD` to its password. With an authenticated GitHub CLI, run these commands from the repository and enter the password when prompted. Adjust the keystore path if you are reusing one.
+
+   ```bash
+   base64 < "$HOME/cadence-release.jks" | tr -d '\n' | gh secret set ANDROID_KEYSTORE_BASE64
+   gh secret set ANDROID_KEYSTORE_PASSWORD
+   ```
+
+### Publish a version
+
+1. Merge the changes to `main` and wait for **Cadence checks** to pass.
+2. Tag the latest `main` commit with an unused version. The tag sets the installer and APK versions. Use minor and patch numbers from 0 to 99 and an Android version newer than the last distributed APK.
+
+   ```bash
+   git switch main &&
+   git pull --ff-only origin main &&
+   read -r -p 'Release version (MAJOR.MINOR.PATCH): ' version &&
+   git tag -a "v$version" -m "Cadence v$version" && git push origin "v$version"
+   ```
+
+3. Watch the **Release** workflow in the **Actions** tab. Once it passes, the installers, APK, and generated release notes appear under **Releases**.

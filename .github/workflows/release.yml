@@ -1,0 +1,192 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  version:
+    runs-on: ubuntu-24.04
+    outputs:
+      number: ${{ steps.version.outputs.number }}
+    steps:
+      - name: Read version tag
+        id: version
+        run: |
+          if [[ ! "$GITHUB_REF_NAME" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]?)\.(0|[1-9][0-9]?)$ ]]; then
+            echo '::error::Use a vMAJOR.MINOR.PATCH tag with minor and patch between 0 and 99.'
+            exit 1
+          fi
+          printf 'number=%s\n' "${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+  desktop:
+    needs: [ci, version]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-22.04
+            platform: linux
+            bundles: deb,rpm,appimage
+          - runner: windows-latest
+            platform: windows
+            bundles: nsis,msi
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/cadence-desktop/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install Linux bundling dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev libasound2-dev librsvg2-dev libfuse2 patchelf xdg-utils
+      - name: Build desktop installers
+        working-directory: apps/cadence-desktop
+        shell: bash
+        env:
+          VERSION: ${{ needs.version.outputs.number }}
+          BUNDLES: ${{ matrix.bundles }}
+        run: |
+          npm ci
+          printf '{"version":"%s"}\n' "$VERSION" > "$RUNNER_TEMP/cadence-release.json"
+          npm run tauri build -- --bundles "$BUNDLES" --config "$RUNNER_TEMP/cadence-release.json"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-${{ matrix.platform }}
+          path: |
+            target/release/bundle/deb/*.deb
+            target/release/bundle/rpm/*.rpm
+            target/release/bundle/appimage/*.AppImage
+            target/release/bundle/nsis/*.exe
+            target/release/bundle/msi/*.msi
+          if-no-files-found: error
+          overwrite: true
+
+  android:
+    needs: [ci, version]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: apps/cadence-mobile
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/cadence-mobile/package-lock.json
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 17
+      - name: Restore Android signing key
+        id: signing
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: |
+          set -o pipefail
+          if [[ -z "$KEYSTORE_BASE64" || -z "$KEYSTORE_PASSWORD" ]]; then
+            echo '::error::Set ANDROID_KEYSTORE_BASE64 and ANDROID_KEYSTORE_PASSWORD in GitHub Actions secrets.'
+            exit 1
+          fi
+          umask 077
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/cadence.jks"
+          fingerprint=$(keytool -exportcert -keystore "$RUNNER_TEMP/cadence.jks" \
+            -storepass:env KEYSTORE_PASSWORD -alias cadence | sha256sum | cut -d ' ' -f 1)
+          printf 'fingerprint=%s\n' "$fingerprint" >> "$GITHUB_OUTPUT"
+      - name: Install Android SDK packages
+        run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0' 'ndk;27.1.12297006'
+      - name: Generate Android project
+        env:
+          VERSION: ${{ needs.version.outputs.number }}
+        run: |
+          npm ci --legacy-peer-deps
+          node -e '
+            const fs = require("node:fs");
+            const config = JSON.parse(fs.readFileSync("app.json", "utf8"));
+            config.expo.version = process.env.VERSION;
+            fs.writeFileSync("app.json", JSON.stringify(config, null, 2) + "\n");
+          '
+          npx expo prebuild --platform android --no-install
+      - name: Build signed APK
+        working-directory: apps/cadence-mobile/android
+        env:
+          ORG_GRADLE_PROJECT_CADENCE_UPLOAD_STORE_FILE: ${{ runner.temp }}/cadence.jks
+          ORG_GRADLE_PROJECT_CADENCE_UPLOAD_STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ORG_GRADLE_PROJECT_CADENCE_UPLOAD_KEY_ALIAS: cadence
+          ORG_GRADLE_PROJECT_CADENCE_UPLOAD_KEY_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: ./gradlew :app:assembleRelease --no-daemon -PreactNativeArchitectures=arm64-v8a
+      - name: Verify release signing certificate
+        env:
+          EXPECTED_FINGERPRINT: ${{ steps.signing.outputs.fingerprint }}
+        run: |
+          apk=android/app/build/outputs/apk/release/app-release.apk
+          certificates=$("$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --print-certs "$apk")
+          fingerprint=$(awk -F ': ' '/^Signer #1 certificate SHA-256 digest:/ {print $2}' <<< "$certificates")
+          if [[ "$fingerprint" != "$EXPECTED_FINGERPRINT" ]]; then
+            echo '::error::The APK signing certificate differs from the Cadence release key.'
+            exit 1
+          fi
+          mv "$apk" "cadence-$GITHUB_REF_NAME-android-arm64.apk"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-android
+          path: apps/cadence-mobile/cadence-*-android-arm64.apk
+          if-no-files-found: error
+          overwrite: true
+
+  publish:
+    needs: [desktop, android]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: release-*
+          path: release-assets
+          merge-multiple: true
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          mapfile -d '' assets < <(find release-assets -type f -print0)
+          if (( ${#assets[@]} == 0 )); then
+            echo '::error::No release assets were downloaded.'
+            exit 1
+          fi
+          if is_draft=$(gh release view "$GITHUB_REF_NAME" --json isDraft --jq .isDraft); then
+            if [[ "$is_draft" == false ]]; then
+              echo "Release $GITHUB_REF_NAME is already published."
+              exit 0
+            fi
+            gh release upload "$GITHUB_REF_NAME" "${assets[@]}" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" "${assets[@]}" --draft --verify-tag \
+              --title "Cadence $GITHUB_REF_NAME" --generate-notes
+          fi
+          gh release edit "$GITHUB_REF_NAME" --draft=false
