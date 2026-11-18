@@ -38,14 +38,23 @@ cargo test --workspace --locked
 
 ### Android app
 
-For development, build the Android app with EAS so it can use native network discovery.
+The Android app needs a custom development build because it uses native network discovery, so Expo Go won't work. Build it locally with JDK 17 and the Android SDK (see [REQUIREMENTS.md](REQUIREMENTS.md#android-development)).
 
-```bash
-cd apps/cadence-mobile
-npm ci --legacy-peer-deps
-eas build --profile development --platform android
-```
+1. Connect your phone over USB with USB debugging enabled, and check that `adb devices` lists it.
+2. Uninstall any release build of Cadence first. Release and development builds share the package name `com.cadence.app` but are signed with different keys, so one cannot install over the other.
 
-Install the development APK, then run `npx expo start --clear` and open the app on your phone. Run `npx --no-install tsc --noEmit` from `apps/cadence-mobile` to check TypeScript.
+   ```bash
+   adb uninstall com.cadence.app
+   ```
 
-The [release workflow](.github/workflows/release.yml) publishes a new release after a pull request merges into `main` and all checks and builds pass. Android release builds use the `ANDROID_KEYSTORE_BASE64` and `ANDROID_KEYSTORE_PASSWORD` repository secrets.
+3. Install dependencies, then build and install the development build. This also starts Metro.
+
+   ```bash
+   cd apps/cadence-mobile
+   npm ci --legacy-peer-deps
+   npx expo run:android
+   ```
+
+The first build takes several minutes. After that, while the development build is installed, run `npx expo start --clear` and open the app on your phone. If the build fails because the generated `android/` folder is stale, regenerate it with `npx expo prebuild --clean --platform android`.
+
+Cloud builds were deliberately ditched in order to avoid expensive third-party build dependencies. 

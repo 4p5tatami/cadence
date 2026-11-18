@@ -1,7 +1,19 @@
 import { Stack } from "expo-router";
+import { StatusBar } from "expo-status-bar";
+import { SafeAreaProvider } from "react-native-safe-area-context";
+import { CadenceProvider } from "@/providers/CadenceProvider";
+import { ToastProvider } from "@/providers/ToastProvider";
+import { colors } from "@/constants/theme";
 
 export default function RootLayout() {
     return (
-        <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: "#0a0a0a" } }} />
+        <SafeAreaProvider>
+            <ToastProvider>
+                <CadenceProvider>
+                    <StatusBar style="light" />
+                    <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: colors.bg } }} />
+                </CadenceProvider>
+            </ToastProvider>
+        </SafeAreaProvider>
     );
 }

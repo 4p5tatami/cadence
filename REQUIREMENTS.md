@@ -25,4 +25,4 @@ cargo run --locked -p cadence-desktop
 
 ## Android development
 
-Install [Node.js](https://nodejs.org/) 22.12 or newer and npm. The Android app uses a custom development build because it includes native discovery. See the [Android setup in the README](README.md#android-app) for the EAS commands. Local Gradle builds require JDK 17 and the Android SDK.
+Install [Node.js](https://nodejs.org/) 22.12 or newer and npm. The Android app uses a custom development build because it includes native discovery. See the [Android setup in the README](README.md#android-app) for build steps. Local builds require JDK 17 and the Android SDK, with `ANDROID_HOME` set and `platform-tools` (for `adb`) on your `PATH`.
