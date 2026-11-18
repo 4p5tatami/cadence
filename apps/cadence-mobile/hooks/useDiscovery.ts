@@ -7,11 +7,24 @@ export interface DiscoveredDevice {
 }
 
 const SERVICE = ["cadence", "tcp", "local."] as const;
+/** How long a manual rescan runs when auto-scan is off. */
+const MANUAL_SCAN_MS = 8000;
 
-export function useDiscovery() {
+/**
+ * mDNS discovery of Cadence desktops.
+ *
+ * @param autoScan Scan continuously (e.g. while not connected). When false, the
+ *   last results are kept and only `rescan()` searches, for MANUAL_SCAN_MS.
+ */
+export function useDiscovery(autoScan: boolean) {
     const [devices, setDevices] = useState<DiscoveredDevice[]>([]);
+    const [scanning, setScanning] = useState(false);
     const zcRef = useRef<Zeroconf | null>(null);
+    const autoScanRef = useRef(autoScan);
+    autoScanRef.current = autoScan;
+    const stopTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
+    // One Zeroconf instance for the lifetime of the hook.
     useEffect(() => {
         const zc = new Zeroconf();
         zcRef.current = zc;
@@ -33,20 +46,35 @@ export function useDiscovery() {
             setDevices((prev) => prev.filter((d) => d.name !== name));
         });
 
-        zc.scan(...SERVICE);
-
         return () => {
+            clearTimeout(stopTimer.current);
             zc.stop();
             zc.removeAllListeners();
             zcRef.current = null;
         };
     }, []);
 
-    /** Clears the list and starts a fresh scan (scan() stops the previous one). */
+    // Start or stop the continuous scan. Stopping keeps the current list.
+    useEffect(() => {
+        clearTimeout(stopTimer.current);
+        if (autoScan) zcRef.current?.scan(...SERVICE);
+        else zcRef.current?.stop();
+        setScanning(autoScan);
+    }, [autoScan]);
+
+    /** Clears the list and searches again; time-limited when auto-scan is off. */
     const rescan = useCallback(() => {
         setDevices([]);
-        zcRef.current?.scan(...SERVICE);
+        setScanning(true);
+        zcRef.current?.scan(...SERVICE); // scan() stops any running scan first
+        clearTimeout(stopTimer.current);
+        if (!autoScanRef.current) {
+            stopTimer.current = setTimeout(() => {
+                zcRef.current?.stop();
+                setScanning(false);
+            }, MANUAL_SCAN_MS);
+        }
     }, []);
 
-    return { devices, rescan };
+    return { devices, scanning, rescan };
 }

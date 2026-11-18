@@ -3,7 +3,7 @@ import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Feather } from "@expo/vector-icons";
 import { router } from "expo-router";
-import { colors, GUTTER, spacing, type } from "@/constants/theme";
+import { colors, GUTTER, spacing, TEXT_INSET, type } from "@/constants/theme";
 
 interface ScreenProps {
     /** Large page title ("Connect to Desktop"). */
@@ -27,9 +27,9 @@ function goBack() {
 }
 
 /**
- * Page scaffold matching the connect-screen mockup: a fixed-height top bar
- * (so titles line up across screens), then title + subtitle, then content.
- * The bottom edge is left to the tab bar / mini player.
+ * Page scaffold matching the mockups: a fixed-height top bar (so titles line up
+ * across screens), then title + subtitle, then content. Cards span the GUTTER;
+ * text blocks sit a further TEXT_INSET in. The bottom edge is left to the tab bar.
  */
 export function Screen({ title, subtitle, headerTitle, back, headerRight, scroll = true, children }: ScreenProps) {
     const body = (
@@ -47,6 +47,12 @@ export function Screen({ title, subtitle, headerTitle, back, headerRight, scroll
     return (
         <SafeAreaView edges={["top"]} style={styles.root}>
             <View style={styles.topBar}>
+                {/* Absolutely centred so it stays centred whatever sits on either side. */}
+                {headerTitle && (
+                    <Text style={[type.headerTitle, styles.headerTitle]} numberOfLines={1} pointerEvents="none">
+                        {headerTitle}
+                    </Text>
+                )}
                 <View style={styles.topBarSide}>
                     {back && (
                         <Pressable onPress={goBack} hitSlop={12} accessibilityRole="button" accessibilityLabel="Back">
@@ -54,7 +60,6 @@ export function Screen({ title, subtitle, headerTitle, back, headerRight, scroll
                         </Pressable>
                     )}
                 </View>
-                {headerTitle && <Text style={styles.headerTitle}>{headerTitle}</Text>}
                 <View style={[styles.topBarSide, styles.topBarRight]}>{headerRight}</View>
             </View>
 
@@ -89,21 +94,22 @@ const styles = StyleSheet.create({
     fill: { flex: 1 },
     topBar: {
         height: 52,
-        paddingHorizontal: GUTTER - 6,
+        paddingHorizontal: GUTTER + TEXT_INSET - 4,
         flexDirection: "row",
         alignItems: "center",
         justifyContent: "space-between",
     },
-    topBarSide: { minWidth: 72, flexDirection: "row", alignItems: "center", gap: spacing.lg },
+    headerTitle: { position: "absolute", left: 72, right: 72, textAlign: "center" },
+    topBarSide: { minWidth: 44, flexDirection: "row", alignItems: "center", gap: spacing.lg },
     topBarRight: { justifyContent: "flex-end" },
-    headerTitle: { fontSize: 17, color: colors.textMuted },
     content: { paddingHorizontal: GUTTER, paddingBottom: spacing.xl },
-    titleBlock: { marginTop: spacing.xl, marginBottom: spacing.xxl },
-    subtitle: { marginTop: spacing.sm },
+    titleBlock: { marginTop: spacing.lg, marginBottom: 28, paddingHorizontal: TEXT_INSET },
+    subtitle: { marginTop: spacing.xs },
     sectionHeader: {
         flexDirection: "row",
         alignItems: "center",
         justifyContent: "space-between",
-        marginBottom: spacing.lg,
+        marginBottom: spacing.md,
+        paddingHorizontal: TEXT_INSET,
     },
 });

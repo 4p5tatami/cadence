@@ -3,16 +3,17 @@ import { ActivityIndicator, Animated, Easing, Pressable, StyleSheet, Text, View 
 import { Feather } from "@expo/vector-icons";
 import { Screen, SectionHeader } from "@/components/Screen";
 import { DeviceCard } from "@/components/DeviceCard";
-import { colors, radius, spacing } from "@/constants/theme";
+import { colors, fonts, radius, spacing, type } from "@/constants/theme";
 import { useCadence } from "@/providers/CadenceProvider";
 
 export default function ConnectScreen() {
-    const { devices, rescan, device, status, error, connect, disconnect } = useCadence();
+    const { devices, scanning, rescan, device, status, error, connect, disconnect } = useCadence();
     const others = devices.filter((d) => d.url !== device?.url);
     const connected = status === "connected";
 
     return (
         <Screen
+            headerTitle="Connect"
             title="Connect to Desktop"
             subtitle="Play music from your library on Cadence desktop. Devices are discovered on your local network."
         >
@@ -33,7 +34,7 @@ export default function ConnectScreen() {
             <View style={styles.section}>
                 <SectionHeader title="Discovered devices" right={<RefreshButton onPress={rescan} />} />
                 {others.length === 0 ? (
-                    <SearchingCard hasConnected={!!device} />
+                    <SearchingCard hasConnected={!!device} scanning={scanning} />
                 ) : (
                     <View style={styles.list}>
                         {others.map((d) => (
@@ -66,23 +67,33 @@ function RefreshButton({ onPress }: { onPress: () => void }) {
     return (
         <Pressable onPress={handlePress} hitSlop={12} accessibilityRole="button" accessibilityLabel="Rescan for devices">
             <Animated.View style={{ transform: [{ rotate }] }}>
-                <Feather name="refresh-cw" size={22} color={colors.accent} />
+                <Feather name="refresh-cw" size={20} color={colors.accentIcon} />
             </Animated.View>
         </Pressable>
     );
 }
 
-function SearchingCard({ hasConnected }: { hasConnected: boolean }) {
+/** Empty state for the discovered list: searching, or (once connected) the last manual scan found nothing. */
+function SearchingCard({ hasConnected, scanning }: { hasConnected: boolean; scanning: boolean }) {
+    const title = scanning
+        ? hasConnected
+            ? "Looking for other devices…"
+            : "Searching for devices…"
+        : "No other devices found.";
+    const hint = scanning
+        ? "Make sure Cadence desktop is running on the same Wi-Fi network."
+        : "Tap refresh to search again.";
+
     return (
         <View style={styles.searching}>
-            <ActivityIndicator color={colors.accent} />
+            {scanning ? (
+                <ActivityIndicator color={colors.accent} />
+            ) : (
+                <Feather name="wifi" size={20} color={colors.tabInactive} />
+            )}
             <View style={styles.searchingText}>
-                <Text style={styles.searchingTitle}>
-                    {hasConnected ? "Looking for other devices…" : "Searching for devices…"}
-                </Text>
-                <Text style={styles.searchingHint}>
-                    Make sure Cadence desktop is running on the same Wi-Fi network.
-                </Text>
+                <Text style={type.body}>{title}</Text>
+                <Text style={type.caption}>{hint}</Text>
             </View>
         </View>
     );
@@ -90,7 +101,7 @@ function SearchingCard({ hasConnected }: { hasConnected: boolean }) {
 
 const styles = StyleSheet.create({
     section: { marginBottom: spacing.xxl },
-    list: { gap: spacing.md },
+    list: { gap: 10 },
     error: {
         flexDirection: "row",
         alignItems: "center",
@@ -100,7 +111,7 @@ const styles = StyleSheet.create({
         borderRadius: radius.md,
         backgroundColor: "rgba(228, 107, 107, 0.1)",
     },
-    errorText: { color: colors.danger, fontSize: 14, flex: 1 },
+    errorText: { flex: 1, fontFamily: fonts.regular, fontSize: 14, lineHeight: 20, color: colors.danger },
     searching: {
         flexDirection: "row",
         alignItems: "center",
@@ -111,7 +122,5 @@ const styles = StyleSheet.create({
         borderStyle: "dashed",
         borderColor: colors.border,
     },
-    searchingText: { flex: 1, gap: 4 },
-    searchingTitle: { fontSize: 16, color: colors.text },
-    searchingHint: { fontSize: 13, lineHeight: 18, color: colors.textMuted },
+    searchingText: { flex: 1, gap: 3 },
 });

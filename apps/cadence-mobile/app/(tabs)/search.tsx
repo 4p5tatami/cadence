@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 import { Screen } from "@/components/Screen";
-import { colors, radius, spacing, type } from "@/constants/theme";
+import { colors, fonts, radius, spacing, type } from "@/constants/theme";
 import { useCadence } from "@/providers/CadenceProvider";
 
 export default function SearchScreen() {
@@ -22,7 +22,7 @@ export default function SearchScreen() {
                 value={query}
                 onChangeText={setQuery}
                 placeholder="Search for songs, albums, artists…"
-                placeholderTextColor={colors.textDim}
+                placeholderTextColor={colors.tabInactive}
                 autoCapitalize="none"
                 autoCorrect={false}
                 editable={status === "connected"}
@@ -51,7 +51,8 @@ const styles = StyleSheet.create({
         borderRadius: radius.lg,
         backgroundColor: colors.surface,
         color: colors.text,
-        fontSize: 16,
+        fontFamily: fonts.regular,
+        fontSize: 15,
     },
     row: { paddingVertical: spacing.md },
 });
