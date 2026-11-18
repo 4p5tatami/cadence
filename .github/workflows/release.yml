@@ -70,7 +70,7 @@ jobs:
           - runner: ubuntu-22.04
             platform: linux
             formats: deb,appimage
-          - runner: windows-latest
+          - runner: windows-2022
             platform: windows
             formats: nsis,wix
     runs-on: ${{ matrix.runner }}
