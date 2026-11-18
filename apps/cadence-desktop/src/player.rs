@@ -1,17 +1,30 @@
 use cadence_core::{Library, OutputState, Player, PlayerMode};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{mpsc, Arc};
+use tokio::sync::oneshot;
+
+/// Reply for commands that load a track: `Err` carries a user-facing message.
+pub(crate) type LoadReply = oneshot::Sender<Result<(), String>>;
 
 pub(crate) enum PlayerMessage {
-    Play(PathBuf),
+    Play(PathBuf, LoadReply),
     Pause,
     Resume,
     Stop,
-    Previous,
-    Next,
+    Previous(LoadReply),
+    Next(LoadReply),
     Seek(u64),
+    /// Volume level in `0.0..=1.0`; see `Player::set_volume`.
+    SetVolume(f32),
     SetMode(PlayerMode),
-    Status(mpsc::SyncSender<Option<StatusResponse>>),
+    Status(mpsc::SyncSender<Snapshot>),
+}
+
+/// Periodic view of the player for clients. Volume is reported even when stopped
+/// so a remote can show and change it before anything plays.
+pub(crate) struct Snapshot {
+    pub track: Option<StatusResponse>,
+    pub volume: f32,
 }
 
 pub(crate) struct StatusResponse {
@@ -32,12 +45,31 @@ impl StatusResponse {
     }
 }
 
+/// Loads and plays `path`. On failure the current track keeps playing and the
+/// error is turned into a short message suitable for showing on the phone.
+fn load(player: &mut Player, path: &Path) -> Result<(), String> {
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.display().to_string());
+    if !path.exists() {
+        return Err(format!(
+            "Couldn't find \u{201c}{name}\u{201d}. Is the drive or folder it's on available?"
+        ));
+    }
+    player
+        .load_and_play(path.to_path_buf())
+        .map(|_| ())
+        .map_err(|error| format!("Couldn't play \u{201c}{name}\u{201d}: {error}"))
+}
+
 pub(crate) fn spawn(library: Arc<Library>) -> mpsc::Sender<PlayerMessage> {
     let (tx, rx) = mpsc::channel();
 
     std::thread::spawn(move || {
         let mut player = Player::new().expect("Failed to create player");
         // history[history_pos] is always the currently playing track (when non-empty).
+        // Tracks are only recorded once they load, so history never holds a broken entry.
         let mut history: Vec<PathBuf> = Vec::new();
         let mut history_pos: usize = 0;
 
@@ -45,26 +77,31 @@ pub(crate) fn spawn(library: Arc<Library>) -> mpsc::Sender<PlayerMessage> {
         let advance = |player: &mut Player,
                        history: &mut Vec<PathBuf>,
                        history_pos: &mut usize,
-                       library: &Library| {
+                       library: &Library|
+         -> Result<(), String> {
             if *history_pos + 1 < history.len() {
+                load(player, &history[*history_pos + 1])?;
                 *history_pos += 1;
-                player.load_and_play(history[*history_pos].clone()).ok();
-            } else {
-                let current = player.current_track().map(|t| t.path.clone());
-                if let Ok(paths) = library.all_track_paths() {
-                    use rand::seq::SliceRandom;
-                    let candidates: Vec<&PathBuf> = paths
-                        .iter()
-                        .filter(|p| Some(*p) != current.as_ref())
-                        .collect();
-                    if let Some(next_path) = candidates.choose(&mut rand::thread_rng()) {
-                        let next_path = (*next_path).clone();
-                        history.push(next_path.clone());
-                        *history_pos = history.len() - 1;
-                        player.load_and_play(next_path).ok();
-                    }
-                }
+                return Ok(());
             }
+            let current = player.current_track().map(|t| t.path.clone());
+            let Ok(paths) = library.all_track_paths() else {
+                return Ok(());
+            };
+            use rand::seq::SliceRandom;
+            let candidates: Vec<&PathBuf> = paths
+                .iter()
+                .filter(|p| Some(*p) != current.as_ref())
+                .collect();
+            if let Some(next_path) = candidates.choose(&mut rand::thread_rng()) {
+                load(player, next_path)?;
+                if !history.is_empty() {
+                    history.truncate(*history_pos + 1);
+                }
+                history.push((*next_path).clone());
+                *history_pos = history.len() - 1;
+            }
+            Ok(())
         };
 
         loop {
@@ -76,14 +113,17 @@ pub(crate) fn spawn(library: Arc<Library>) -> mpsc::Sender<PlayerMessage> {
             };
             player.maintain_audio_output();
             match cmd {
-                PlayerMessage::Play(path) => {
-                    // Truncate any forward history, then append the new track.
-                    if !history.is_empty() {
-                        history.truncate(history_pos + 1);
+                PlayerMessage::Play(path, reply) => {
+                    let result = load(&mut player, &path);
+                    if result.is_ok() {
+                        // Truncate any forward history, then append the new track.
+                        if !history.is_empty() {
+                            history.truncate(history_pos + 1);
+                        }
+                        history.push(path);
+                        history_pos = history.len() - 1;
                     }
-                    history.push(path.clone());
-                    history_pos = history.len() - 1;
-                    player.load_and_play(path).ok();
+                    reply.send(result).ok();
                 }
                 PlayerMessage::Pause => {
                     player.pause();
@@ -94,17 +134,25 @@ pub(crate) fn spawn(library: Arc<Library>) -> mpsc::Sender<PlayerMessage> {
                 PlayerMessage::Stop => {
                     player.stop();
                 }
-                PlayerMessage::Previous => {
+                PlayerMessage::Previous(reply) => {
+                    let mut result = Ok(());
                     if history_pos > 0 {
-                        history_pos -= 1;
-                        player.load_and_play(history[history_pos].clone()).ok();
+                        result = load(&mut player, &history[history_pos - 1]);
+                        if result.is_ok() {
+                            history_pos -= 1;
+                        }
                     }
+                    reply.send(result).ok();
                 }
-                PlayerMessage::Next => {
-                    advance(&mut player, &mut history, &mut history_pos, &library);
+                PlayerMessage::Next(reply) => {
+                    let result = advance(&mut player, &mut history, &mut history_pos, &library);
+                    reply.send(result).ok();
                 }
                 PlayerMessage::Seek(to_ms) => {
                     player.seek(to_ms).ok();
+                }
+                PlayerMessage::SetVolume(level) => {
+                    player.set_volume(level);
                 }
                 PlayerMessage::SetMode(mode) => {
                     player.set_mode(mode);
@@ -119,11 +167,11 @@ pub(crate) fn spawn(library: Arc<Library>) -> mpsc::Sender<PlayerMessage> {
                                 player.load_and_play(path).ok();
                             }
                             PlayerMode::Shuffle => {
-                                advance(&mut player, &mut history, &mut history_pos, &library);
+                                advance(&mut player, &mut history, &mut history_pos, &library).ok();
                             }
                         }
                     }
-                    let status = player.current_track().map(|track| StatusResponse {
+                    let track = player.current_track().map(|track| StatusResponse {
                         path: track.path.to_string_lossy().into_owned(),
                         duration_ms: track.duration_ms,
                         position_ms: player.current_position_ms(),
@@ -134,11 +182,31 @@ pub(crate) fn spawn(library: Arc<Library>) -> mpsc::Sender<PlayerMessage> {
                         artist: track.artist.clone(),
                         mode: player.get_mode(),
                     });
-                    reply.send(status).ok();
+                    reply
+                        .send(Snapshot {
+                            track,
+                            volume: player.volume(),
+                        })
+                        .ok();
                 }
             }
         }
     });
 
     tx
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn missing_file_reports_its_name() {
+        let Ok(mut player) = Player::new() else {
+            return; // No audio backend on this machine (e.g. CI).
+        };
+        let error = load(&mut player, Path::new("/nonexistent/dir/Alone Again.flac")).unwrap_err();
+        assert!(error.contains("Alone Again.flac"), "{error}");
+        assert!(!error.contains("/nonexistent"), "{error}");
+    }
 }

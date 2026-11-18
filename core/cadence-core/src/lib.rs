@@ -205,12 +205,25 @@ impl OutputConnection {
     }
 }
 
+/// Maps a volume level in `0.0..=1.0` to the linear gain applied to the sink.
+///
+/// Loudness is perceived logarithmically, so a linear slider would put almost all
+/// of the useful range in its bottom tenth. A cubic curve (as used by PulseAudio)
+/// spreads it evenly: 50% is about -18 dB and 10% about -60 dB.
+fn volume_gain(level: f32) -> f32 {
+    level * level * level
+}
+
 /// Owns track playback, its saved position, user intent, and decoder errors.
 struct PlaybackManager {
     sink: Sink,
     current_track: Option<TrackInfo>,
     paused: bool,
     position_offset_ms: u64,
+    /// User-facing volume level in `0.0..=1.0`. This is the source of truth: every
+    /// new sink is given `volume_gain(volume)`, so it survives track changes,
+    /// seeks and output recovery.
+    volume: f32,
     playback_error: Option<String>,
 }
 
@@ -222,6 +235,7 @@ impl PlaybackManager {
             current_track: None,
             paused: true,
             position_offset_ms: 0,
+            volume: 1.0,
             playback_error: None,
         }
     }
@@ -239,10 +253,9 @@ impl PlaybackManager {
 
     /// Replaces the sink without waiting for a device callback; preserves volume.
     fn reset_sink(&mut self) {
-        let volume = self.sink.volume();
         self.sink.stop();
         self.sink = Sink::new().0;
-        self.sink.set_volume(volume);
+        self.sink.set_volume(volume_gain(self.volume));
     }
 
     fn freeze_at_current_position(&mut self) {
@@ -252,7 +265,7 @@ impl PlaybackManager {
 
     fn attach_source(&mut self, src: Box<dyn Source + Send>, mixer: &rodio::mixer::Mixer) {
         let sink = Sink::connect_new(mixer);
-        sink.set_volume(self.sink.volume());
+        sink.set_volume(volume_gain(self.volume));
         sink.pause();
         sink.append(src);
         self.sink.stop();
@@ -355,6 +368,22 @@ impl PlaybackManager {
         }
         Ok(())
     }
+
+    /// Sets the volume level, clamped to `0.0..=1.0`, and applies it to the live sink.
+    /// Non-finite input (e.g. NaN from a malformed client message) is ignored.
+    fn set_volume(&mut self, level: f32) {
+        if !level.is_finite() {
+            return;
+        }
+        self.volume = level.clamp(0.0, 1.0);
+        self.sink.set_volume(volume_gain(self.volume));
+    }
+
+    /// Moves the volume level by an absolute `delta` (e.g. `0.05` for +5%).
+    /// Additive rather than proportional, so it can always climb back up from 0.
+    fn adjust_volume(&mut self, delta: f32) {
+        self.set_volume(self.volume + delta);
+    }
 }
 
 /// Coordinates the output connection and track playback; both remain internal.
@@ -437,6 +466,23 @@ impl Player {
     pub fn seek(&mut self, to_ms: u64) -> Result<()> {
         self.maintain_audio_output();
         self.playback_manager.seek(to_ms, self.output.mixer())
+    }
+
+    /// Current volume level in `0.0..=1.0`. This is the slider position, not the
+    /// linear gain; see [`volume_gain`].
+    pub fn volume(&self) -> f32 {
+        self.playback_manager.volume
+    }
+
+    /// Sets the volume level, clamped to `0.0..=1.0`. Takes effect immediately and
+    /// persists across tracks, seeks and output reconnects. Non-finite input is ignored.
+    pub fn set_volume(&mut self, level: f32) {
+        self.playback_manager.set_volume(level);
+    }
+
+    /// Changes the volume level by `delta` (e.g. `-0.05` for -5%), clamped to `0.0..=1.0`.
+    pub fn adjust_volume(&mut self, delta: f32) {
+        self.playback_manager.adjust_volume(delta);
     }
 
     pub fn get_mode(&self) -> PlayerMode {
@@ -562,6 +608,45 @@ mod playback_tests {
     }
 
     #[test]
+    fn volume_is_clamped_and_ignores_non_finite_input() {
+        let mut player = player_with_deferred_connection(Instant::now());
+        assert_eq!(player.volume(), 1.0);
+        player.set_volume(1.5);
+        assert_eq!(player.volume(), 1.0);
+        player.set_volume(-0.2);
+        assert_eq!(player.volume(), 0.0);
+        player.set_volume(0.5);
+        player.set_volume(f32::NAN);
+        player.set_volume(f32::INFINITY);
+        assert_eq!(player.volume(), 0.5);
+    }
+
+    #[test]
+    fn adjust_volume_steps_additively_and_recovers_from_zero() {
+        let mut player = player_with_deferred_connection(Instant::now());
+        player.set_volume(0.0);
+        player.adjust_volume(0.1);
+        assert!((player.volume() - 0.1).abs() < 1e-6);
+        player.adjust_volume(-0.5);
+        assert_eq!(player.volume(), 0.0);
+        player.set_volume(0.95);
+        player.adjust_volume(0.1);
+        assert_eq!(player.volume(), 1.0);
+    }
+
+    #[test]
+    fn volume_uses_cubic_gain_and_survives_new_tracks() {
+        let fixture = Fixture::new();
+        let mut player = player_with_deferred_connection(Instant::now());
+        player.set_volume(0.5);
+        assert_eq!(player.playback_manager.sink.volume(), 0.125);
+        player.load_and_play(fixture.0.clone()).unwrap();
+        player.load_and_play(fixture.0.clone()).unwrap();
+        assert_eq!(player.volume(), 0.5);
+        assert_eq!(player.playback_manager.sink.volume(), 0.125);
+    }
+
+    #[test]
     fn recovery_restores_position_volume_and_pause_then_seeks_absolutely() {
         let fixture = Fixture::new();
         let now = Instant::now();
@@ -569,7 +654,7 @@ mod playback_tests {
         player.load_and_play(fixture.0.clone()).unwrap();
         player.seek(1500).unwrap();
         player.pause();
-        player.playback_manager.sink.set_volume(0.4);
+        player.set_volume(0.4);
         let (output, mut source) = fake_output();
         player.maintain_audio_output_with(now + Duration::from_secs(60), |_| Ok(output));
         for _ in 0..4410 {
@@ -577,7 +662,8 @@ mod playback_tests {
         }
         assert!(player.is_paused());
         assert_eq!(player.current_position_ms(), 1500);
-        assert_eq!(player.playback_manager.sink.volume(), 0.4);
+        assert_eq!(player.volume(), 0.4);
+        assert_eq!(player.playback_manager.sink.volume(), volume_gain(0.4));
         player.resume();
         for _ in 0..4410 {
             source.next();
@@ -689,7 +775,7 @@ mod playback_tests {
             std::env::var_os("CADENCE_AUDIO_TEST_FILE").expect("Set CADENCE_AUDIO_TEST_FILE"),
         );
         let mut player = Player::new().unwrap();
-        player.playback_manager.sink.set_volume(0.0);
+        player.set_volume(0.0);
         let started = Instant::now();
         let info = player.load_and_play(path.clone()).unwrap();
         let startup = started.elapsed();

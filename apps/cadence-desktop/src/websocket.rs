@@ -4,10 +4,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use tokio::net::TcpListener;
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, oneshot};
 use tokio_tungstenite::tungstenite::Message;
 
-use crate::player::{PlayerMessage, StatusResponse};
+use crate::player::{LoadReply, PlayerMessage, StatusResponse};
 use cadence_core::{Library, OutputState, PlayerMode, TrackRecord};
 
 /// State broadcast sent to all clients every 100 ms.
@@ -25,6 +25,15 @@ struct StateMsg<'a> {
     playback_error: Option<&'a str>,
     snapshot_at_ms: u64,
     mode: &'a PlayerMode,
+    volume: f32,
+}
+
+/// Broadcast instead of [`StateMsg`] when no track is loaded.
+#[derive(Serialize)]
+struct StoppedMsg {
+    #[serde(rename = "type")]
+    msg_type: &'static str,
+    volume: f32,
 }
 
 /// Search results sent only to the requesting client.
@@ -34,6 +43,36 @@ struct SearchResultsMsg {
     msg_type: &'static str,
     query: String,
     tracks: Vec<TrackRecord>,
+}
+
+/// A failed command, sent only to the client that issued it.
+#[derive(Serialize)]
+struct ErrorMsg<'a> {
+    #[serde(rename = "type")]
+    msg_type: &'static str,
+    message: &'a str,
+}
+
+fn error_json(message: &str) -> String {
+    serde_json::to_string(&ErrorMsg {
+        msg_type: "error",
+        message,
+    })
+    .unwrap()
+}
+
+/// Sends a track-loading command and waits for the player's verdict.
+/// Returns the error JSON to forward to the client if loading failed.
+async fn load_command(
+    ptx: &mpsc::Sender<PlayerMessage>,
+    make: impl FnOnce(LoadReply) -> PlayerMessage,
+) -> Option<String> {
+    let (tx, rx) = oneshot::channel();
+    ptx.send(make(tx)).ok()?;
+    match rx.await {
+        Ok(Err(message)) => Some(error_json(&message)),
+        _ => None,
+    }
 }
 
 /// Commands sent from clients to the server.
@@ -47,6 +86,7 @@ enum ClientMsg {
     Next,
     Previous,
     Seek { to_ms: u64 },
+    SetVolume { volume: f32 },
     Search { query: String },
     SetMode { mode: PlayerMode },
 }
@@ -58,7 +98,7 @@ fn now_ms() -> u64 {
         .as_millis() as u64
 }
 
-fn state_json(status: &StatusResponse) -> String {
+fn state_json(status: &StatusResponse, volume: f32) -> String {
     let msg = StateMsg {
         msg_type: "state",
         track_path: &status.path,
@@ -71,8 +111,17 @@ fn state_json(status: &StatusResponse) -> String {
         playback_error: status.playback_error.as_deref(),
         snapshot_at_ms: now_ms(),
         mode: &status.mode,
+        volume,
     };
     serde_json::to_string(&msg).unwrap()
+}
+
+fn stopped_json(volume: f32) -> String {
+    serde_json::to_string(&StoppedMsg {
+        msg_type: "stopped",
+        volume,
+    })
+    .unwrap()
 }
 
 pub async fn serve(
@@ -94,15 +143,15 @@ pub async fn serve(
                 let result = tokio::task::spawn_blocking(move || {
                     let (tx, rx) = mpsc::sync_channel(1);
                     ptx2.send(PlayerMessage::Status(tx)).ok();
-                    rx.recv().ok().flatten()
+                    rx.recv().ok()
                 })
                 .await;
 
-                if let Ok(status) = result {
-                    on_playback(btx.receiver_count() > 0, status.as_ref());
-                    let wire = match status {
-                        Some(status) => state_json(&status),
-                        None => r#"{"type":"stopped"}"#.to_string(),
+                if let Ok(Some(snapshot)) = result {
+                    on_playback(btx.receiver_count() > 0, snapshot.track.as_ref());
+                    let wire = match &snapshot.track {
+                        Some(status) => state_json(status, snapshot.volume),
+                        None => stopped_json(snapshot.volume),
                     };
                     btx.send(wire).ok();
                 }
@@ -129,16 +178,30 @@ pub async fn serve(
                             Some(Ok(Message::Text(text))) => {
                                 let Ok(cmd) = serde_json::from_str::<ClientMsg>(&text) else { continue };
                                 match cmd {
+                                    ClientMsg::Play { path } => {
+                                        let failure = load_command(&ptx, |tx| PlayerMessage::Play(path.into(), tx)).await;
+                                        if let Some(reply) = failure {
+                                            if write.send(Message::Text(reply)).await.is_err() { break; }
+                                        }
+                                    }
+                                    ClientMsg::Next => {
+                                        if let Some(reply) = load_command(&ptx, PlayerMessage::Next).await {
+                                            if write.send(Message::Text(reply)).await.is_err() { break; }
+                                        }
+                                    }
+                                    ClientMsg::Previous => {
+                                        if let Some(reply) = load_command(&ptx, PlayerMessage::Previous).await {
+                                            if write.send(Message::Text(reply)).await.is_err() { break; }
+                                        }
+                                    }
                                     ClientMsg::Pause    => { ptx.send(PlayerMessage::Pause).ok(); }
                                     ClientMsg::Resume   => { ptx.send(PlayerMessage::Resume).ok(); }
                                     ClientMsg::Stop     => { ptx.send(PlayerMessage::Stop).ok(); }
-                                    ClientMsg::Next     => { ptx.send(PlayerMessage::Next).ok(); }
-                                    ClientMsg::Previous => { ptx.send(PlayerMessage::Previous).ok(); }
                                     ClientMsg::Seek { to_ms } => {
                                         ptx.send(PlayerMessage::Seek(to_ms)).ok();
                                     }
-                                    ClientMsg::Play { path } => {
-                                        ptx.send(PlayerMessage::Play(path.into())).ok();
+                                    ClientMsg::SetVolume { volume } => {
+                                        ptx.send(PlayerMessage::SetVolume(volume)).ok();
                                     }
                                     ClientMsg::Search { query } => {
                                         let lib2 = Arc::clone(&lib);
@@ -200,16 +263,38 @@ mod tests {
         ] {
             status.output_state = state;
             status.paused = paused;
-            let wire: serde_json::Value = serde_json::from_str(&state_json(&status)).unwrap();
+            let wire: serde_json::Value = serde_json::from_str(&state_json(&status, 0.5)).unwrap();
             assert_eq!(wire["playing"], playing);
+            assert_eq!(wire["volume"], 0.5);
             assert_eq!(wire["position_ms"], 30000);
             assert_eq!(wire["output_state"], serde_json::to_value(state).unwrap());
             assert_eq!(wire["type"], "state");
         }
         status.playback_error = Some("Cannot restore playback position".into());
-        let wire: serde_json::Value = serde_json::from_str(&state_json(&status)).unwrap();
+        let wire: serde_json::Value = serde_json::from_str(&state_json(&status, 0.5)).unwrap();
         assert_eq!(wire["playback_error"], "Cannot restore playback position");
         assert_eq!(wire["output_state"], "ready");
         assert_eq!(wire["playing"], false);
+    }
+
+    #[test]
+    fn error_message_wire_format() {
+        let wire: serde_json::Value =
+            serde_json::from_str(&error_json("Couldn't find \"x.flac\"")).unwrap();
+        assert_eq!(wire["type"], "error");
+        assert_eq!(wire["message"], "Couldn't find \"x.flac\"");
+    }
+
+    #[test]
+    fn volume_is_reported_while_playing_and_stopped() {
+        let wire: serde_json::Value = serde_json::from_str(&stopped_json(0.25)).unwrap();
+        assert_eq!(wire["type"], "stopped");
+        assert_eq!(wire["volume"], 0.25);
+    }
+
+    #[test]
+    fn set_volume_command_parses() {
+        let cmd: ClientMsg = serde_json::from_str(r#"{"type":"set_volume","volume":0.3}"#).unwrap();
+        assert!(matches!(cmd, ClientMsg::SetVolume { volume } if volume == 0.3));
     }
 }
