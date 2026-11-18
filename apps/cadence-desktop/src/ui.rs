@@ -269,7 +269,7 @@ struct LibraryView {
 
 impl LibraryView {
     fn new(sender: app::Sender<Message>, address: &str) -> Self {
-        let mut window = Window::new(0, 0, 770, 530, "cadence - Library Indexer").center_screen();
+        let mut window = Window::new(0, 0, 770, 530, "cadence desktop").center_screen();
         window.set_color(Color::White);
         window.size_range(540, 320, 0, 0);
         if let Ok(icon) = PngImage::from_data(include_bytes!("../assets/cadence.png")) {
