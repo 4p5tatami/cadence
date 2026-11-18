@@ -2,7 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { Animated, Pressable, StyleSheet, Text } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Feather } from "@expo/vector-icons";
-import { colors, radius, spacing } from "@/constants/theme";
+import { colors, fonts, radius, spacing } from "@/constants/theme";
 
 const VISIBLE_MS = 4500;
 
@@ -88,5 +88,5 @@ const styles = StyleSheet.create({
         shadowRadius: 12,
         shadowOffset: { width: 0, height: 4 },
     },
-    text: { flex: 1, fontSize: 14, lineHeight: 20, color: colors.text },
+    text: { flex: 1, fontFamily: fonts.regular, fontSize: 14, lineHeight: 20, color: colors.text },
 });

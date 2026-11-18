@@ -33,7 +33,7 @@ export function TabBar({ state, navigation }: BottomTabBarProps) {
             <View style={[styles.bar, { paddingBottom: Math.max(insets.bottom, spacing.md) }]}>
                 {TABS.map((tab) => {
                     const focused = current === tab.name;
-                    const color = focused ? colors.accent : colors.textMuted;
+                    const color = focused ? colors.accent : colors.tabInactive;
                     return (
                         <Pressable
                             key={tab.name}
@@ -61,7 +61,7 @@ const styles = StyleSheet.create({
         flexDirection: "row",
         paddingTop: spacing.md,
         borderTopWidth: StyleSheet.hairlineWidth,
-        borderTopColor: colors.border,
+        borderTopColor: colors.divider,
         backgroundColor: colors.bg,
     },
     item: { flex: 1, alignItems: "center", gap: spacing.xs },

@@ -1,6 +1,6 @@
 import { ActivityIndicator, StyleSheet, Text, View } from "react-native";
 import { Feather } from "@expo/vector-icons";
-import { colors, radius, spacing } from "@/constants/theme";
+import { colors, radius, spacing, type } from "@/constants/theme";
 import { PillButton } from "@/components/PillButton";
 import type { DiscoveredDevice } from "@/hooks/useDiscovery";
 
@@ -29,20 +29,20 @@ export function DeviceCard({ device, state, onAction }: DeviceCardProps) {
 
     return (
         <View style={[styles.card, highlighted && styles.cardHighlighted]}>
-            <View style={styles.iconTile}>
+            <View style={[styles.iconTile, highlighted && styles.iconTileHighlighted]}>
                 {/* The desktop doesn't advertise a device type yet, so every device gets the monitor icon. */}
-                <Feather name="monitor" size={26} color={colors.accent} />
+                <Feather name="monitor" size={26} color={colors.accentIcon} />
             </View>
 
             <View style={styles.meta}>
-                <Text style={styles.name} numberOfLines={1}>{device.name}</Text>
+                <Text style={type.body} numberOfLines={1}>{device.name}</Text>
                 {state === "connecting" ? (
                     <View style={styles.statusRow}>
                         <ActivityIndicator size="small" color={colors.accent} />
-                        <Text style={styles.address}>Connecting…</Text>
+                        <Text style={type.caption}>Connecting…</Text>
                     </View>
                 ) : (
-                    <Text style={styles.address} numberOfLines={1}>{displayAddress(device.url)}</Text>
+                    <Text style={type.caption} numberOfLines={1}>{displayAddress(device.url)}</Text>
                 )}
             </View>
 
@@ -55,17 +55,18 @@ export function DeviceCard({ device, state, onAction }: DeviceCardProps) {
     );
 }
 
+// Measured from the mockup: 81 pt tall card, 50 pt icon tile, 15 pt between tile and text.
 const styles = StyleSheet.create({
     card: {
         flexDirection: "row",
         alignItems: "center",
-        gap: spacing.lg,
-        paddingVertical: spacing.lg + 2,
-        paddingLeft: spacing.lg,
-        paddingRight: spacing.lg,
+        gap: 15,
+        paddingVertical: 14,
+        paddingLeft: 13,
+        paddingRight: 12,
         borderRadius: radius.lg,
         borderWidth: 1,
-        borderColor: colors.border,
+        borderColor: colors.surfaceBorder,
         backgroundColor: colors.surface,
     },
     cardHighlighted: {
@@ -73,15 +74,14 @@ const styles = StyleSheet.create({
         backgroundColor: colors.accentSoftBg,
     },
     iconTile: {
-        width: 56,
-        height: 56,
+        width: 50,
+        height: 50,
         borderRadius: radius.md,
         backgroundColor: colors.surfaceRaised,
         alignItems: "center",
         justifyContent: "center",
     },
-    meta: { flex: 1, gap: 4 },
-    name: { fontSize: 17, fontWeight: "500", color: colors.text },
-    address: { fontSize: 14, color: colors.textMuted },
+    iconTileHighlighted: { backgroundColor: colors.accentTile },
+    meta: { flex: 1, gap: 3 },
     statusRow: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
 });

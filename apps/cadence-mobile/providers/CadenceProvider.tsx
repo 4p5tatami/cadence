@@ -8,7 +8,9 @@ type DesktopSync = ReturnType<typeof useDesktopSync>;
 interface CadenceContextValue extends DesktopSync {
     /** Devices advertising `_cadence._tcp` on the local network. */
     devices: DiscoveredDevice[];
-    /** Clears the device list and restarts the network scan. */
+    /** True while a network scan is running. */
+    scanning: boolean;
+    /** Clears the device list and searches again. */
     rescan: () => void;
     /** The device we are connected (or connecting) to. */
     device: DiscoveredDevice | null;
@@ -28,8 +30,10 @@ export function CadenceProvider({ children }: { children: ReactNode }) {
     const [device, setDevice] = useState<DiscoveredDevice | null>(null);
     const [error, setError] = useState<string | null>(null);
 
-    const discovery = useDiscovery();
-    const devices = discovery.devices;
+    // Search the network continuously only while not connected (or connecting) to
+    // a device; after that, only an explicit rescan searches.
+    const discovery = useDiscovery(device === null);
+    const { devices, scanning } = discovery;
 
     const rescan = useCallback(() => {
         setError(null);
@@ -72,8 +76,8 @@ export function CadenceProvider({ children }: { children: ReactNode }) {
     }, []);
 
     const value = useMemo<CadenceContextValue>(
-        () => ({ ...sync, devices, rescan, device, error, connect, disconnect }),
-        [sync, devices, rescan, device, error, connect, disconnect],
+        () => ({ ...sync, devices, scanning, rescan, device, error, connect, disconnect }),
+        [sync, devices, scanning, rescan, device, error, connect, disconnect],
     );
 
     return <CadenceContext.Provider value={value}>{children}</CadenceContext.Provider>;

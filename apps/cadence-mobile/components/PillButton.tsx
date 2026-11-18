@@ -1,5 +1,5 @@
 import { Pressable, StyleSheet, Text } from "react-native";
-import { colors, radius } from "@/constants/theme";
+import { colors, radius, type } from "@/constants/theme";
 
 interface PillButtonProps {
     label: string;
@@ -23,16 +23,16 @@ export function PillButton({ label, onPress, variant = "filled", disabled }: Pil
                 (pressed || disabled) && styles.dimmed,
             ]}
         >
-            <Text style={[styles.label, { color: filled ? colors.accentText : colors.accent }]}>{label}</Text>
+            <Text style={[type.button, { color: filled ? colors.accentText : colors.accentLabel }]}>{label}</Text>
         </Pressable>
     );
 }
 
 const styles = StyleSheet.create({
     base: {
-        minWidth: 116,
-        height: 42,
-        paddingHorizontal: 22,
+        minWidth: 107,
+        height: 36,
+        paddingHorizontal: 20,
         borderRadius: radius.pill,
         alignItems: "center",
         justifyContent: "center",
@@ -44,5 +44,4 @@ const styles = StyleSheet.create({
         borderColor: colors.outlineBtnBorder,
     },
     dimmed: { opacity: 0.6 },
-    label: { fontSize: 15, fontWeight: "500" },
 });

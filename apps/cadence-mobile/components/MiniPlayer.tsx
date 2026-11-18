@@ -1,32 +1,28 @@
 import { Pressable, StyleSheet, Text, View } from "react-native";
-import { Feather } from "@expo/vector-icons";
+import { Feather, Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
-import { colors, radius, spacing } from "@/constants/theme";
+import { SeekBar } from "@/components/SeekBar";
+import { colors, fonts, radius, spacing } from "@/constants/theme";
 import { useCadence } from "@/providers/CadenceProvider";
-import { usePlaybackPosition } from "@/hooks/usePlaybackPosition";
 
 /**
  * Bottom overlay shown above the tab bar whenever something is playing.
- * Tapping it opens the Now Playing screen.
+ * The progress line is seekable; tapping the card opens Now Playing.
  */
 export function MiniPlayer() {
     const { playback, pause, resume } = useCadence();
-    const positionMs = usePlaybackPosition(playback, 500);
     if (!playback) return null;
 
-    const progress = playback.durationMs ? Math.min(1, positionMs / playback.durationMs) : 0;
     const title = playback.title ?? playback.trackPath.split(/[\\/]/).at(-1) ?? "Unknown";
 
     return (
         <View style={styles.wrap}>
-            <View style={styles.track}>
-                <View style={[styles.fill, { width: `${progress * 100}%` }]} />
-            </View>
+            <SeekBar variant="mini" style={styles.seek} />
 
             <Pressable style={styles.card} onPress={() => router.navigate("/now-playing")}>
                 {/* TODO: album artwork once the desktop sends it */}
                 <View style={styles.art}>
-                    <Feather name="music" size={20} color={colors.textDim} />
+                    <Feather name="music" size={20} color={colors.accentIcon} />
                 </View>
 
                 <View style={styles.meta}>
@@ -41,7 +37,12 @@ export function MiniPlayer() {
                     accessibilityRole="button"
                     accessibilityLabel={playback.playing ? "Pause" : "Play"}
                 >
-                    <Feather name={playback.playing ? "pause" : "play"} size={20} color={colors.text} />
+                    <Ionicons
+                        name={playback.playing ? "pause" : "play"}
+                        size={22}
+                        color={colors.text}
+                        style={!playback.playing && styles.playNudge}
+                    />
                 </Pressable>
             </Pressable>
         </View>
@@ -49,16 +50,9 @@ export function MiniPlayer() {
 }
 
 const styles = StyleSheet.create({
-    wrap: { paddingHorizontal: spacing.md, paddingBottom: spacing.sm, backgroundColor: colors.bg },
-    track: {
-        height: 3,
-        marginHorizontal: spacing.sm,
-        marginBottom: spacing.md,
-        borderRadius: 2,
-        backgroundColor: colors.divider,
-        overflow: "hidden",
-    },
-    fill: { height: 3, backgroundColor: colors.text },
+    wrap: { paddingHorizontal: spacing.sm, paddingBottom: spacing.sm, backgroundColor: colors.bg },
+    // The 22 pt touch area centres the 3 pt line, leaving ~13 pt to the card as in the mockup.
+    seek: { marginHorizontal: 6, marginBottom: 2 },
     card: {
         flexDirection: "row",
         alignItems: "center",
@@ -66,26 +60,28 @@ const styles = StyleSheet.create({
         gap: spacing.lg,
         borderRadius: radius.lg,
         borderWidth: 1,
-        borderColor: colors.border,
+        borderColor: colors.surfaceBorder,
         backgroundColor: colors.surface,
     },
     art: {
-        width: 52,
-        height: 52,
+        width: 46,
+        height: 46,
         borderRadius: radius.sm,
-        backgroundColor: colors.surfaceRaised,
+        backgroundColor: colors.accentTile,
         alignItems: "center",
         justifyContent: "center",
     },
-    meta: { flex: 1 },
-    title: { fontSize: 16, fontWeight: "500", color: colors.text },
-    artist: { fontSize: 14, color: colors.textMuted, marginTop: 2 },
+    meta: { flex: 1, gap: 2 },
+    title: { fontFamily: fonts.medium, fontSize: 15, lineHeight: 20, color: colors.text },
+    artist: { fontFamily: fonts.regular, fontSize: 13, lineHeight: 18, color: colors.textMuted },
     playBtn: {
-        width: 44,
-        height: 44,
+        width: 42,
+        height: 42,
         borderRadius: radius.pill,
         backgroundColor: colors.bg,
         alignItems: "center",
         justifyContent: "center",
     },
+    // Optically centre the play triangle.
+    playNudge: { marginLeft: 2 },
 });
