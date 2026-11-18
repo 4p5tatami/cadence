@@ -1,4 +1,4 @@
-# Cadence
+# cadence
 
 Cross-platform music player with Android remote control. Index your local music library on a Windows or Linux computer, then search and control playback from your phone. Audio plays through the computer’s speakers or headphones.
 
@@ -27,23 +27,6 @@ If Android prompts you to allow installation, grant **Allow from this source** t
 2. Connect the phone and computer to the **same local network** and leave the desktop app open.
 3. Open Cadence on Android and tap your computer under **Available devices**.
 4. Search the indexed library and tap a track to play it on your computer. Use the now-playing bar to pause, resume, stop, skip, seek or adjust your volume. (In-progress)
-
-## Troubleshooting Notes
-
-On Linux, make sure the drives holding your library folders are mounted before you play from them.
-
-If your computer doesn’t appear, check that the desktop app is open and both devices are on the same network. A VPN on the computer can also stop the phone from reaching it.
-
-On Windows, a dismissed firewall prompt is the most common cause. To check, open **Windows Defender Firewall with Advanced Security**, go to **Inbound Rules**, and look for a `cadence-desktop.exe` rule with a block icon. Delete those rules and restart Cadence so Windows asks again, or run this in an administrator PowerShell:
-
-```powershell
-Get-NetFirewallApplicationFilter | Where-Object Program -like '*cadence-desktop.exe' |
-  Get-NetFirewallRule | Where-Object Action -eq Block | Remove-NetFirewallRule
-New-NetFirewallRule -DisplayName "Cadence" -Direction Inbound -Action Allow `
-  -Program "$env:LOCALAPPDATA\cadence-desktop\cadence-desktop.exe" -Profile Private,Public
-```
-
-The path above is for the `.exe` installer. If you used the `.msi`, replace it with the path of `cadence-desktop.exe` in your installation folder.
 
 ## Development
 
