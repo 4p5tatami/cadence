@@ -10,6 +10,9 @@
   "outDir": "../../target/packages",
   "binaries": [{ "path": "cadence-desktop", "main": true }],
   "icons": ["assets/cadence.png", "assets/cadence.ico"],
+  "nsis": {
+    "preinstallSection": "Section FirewallNotice\n  MessageBox MB_OK|MB_ICONEXCLAMATION \"IMPORTANT: When Cadence first starts, Windows Firewall will ask whether to allow it on your network. Select Allow. Cadence advertises itself on your local network (mDNS) and accepts connections from the Android app over WebSockets (port 7878). If you do not allow it, your phone will not be able to find this computer.\" /SD IDOK\nSectionEnd"
+  },
   "deb": {
     "depends": [
       "libasound2 | libasound2t64",

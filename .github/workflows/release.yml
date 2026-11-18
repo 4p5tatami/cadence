@@ -4,12 +4,15 @@ on:
   pull_request_target:
     branches: [main]
     types: [closed]
+  # Manual "Run workflow" button: builds the latest commit of the chosen branch,
+  # e.g. to release a fix pushed straight to main after a failed release.
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.event.pull_request.merged && 'cadence-main-release' || github.run_id }}
+  group: ${{ (github.event.pull_request.merged || github.event_name == 'workflow_dispatch') && 'cadence-main-release' || github.run_id }}
   queue: max
 
 jobs:
@@ -20,16 +23,16 @@ jobs:
       revision: ${{ needs.version.outputs.revision }}
 
   version:
-    if: github.event.pull_request.merged == true
+    if: github.event.pull_request.merged == true || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     outputs:
       number: ${{ steps.version.outputs.number }}
       revision: ${{ steps.version.outputs.revision }}
     steps:
-      # The merged revision must be part of main before any job builds it.
+      # The merged revision (or, for a manual run, the branch head) must be part of main before any job builds it.
       - uses: actions/checkout@v6
         with:
-          ref: ${{ github.event.pull_request.merge_commit_sha }}
+          ref: ${{ github.event.pull_request.merge_commit_sha || github.sha }}
           fetch-depth: 0
           persist-credentials: false
       - name: Verify merged commit and allocate version

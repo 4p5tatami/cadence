@@ -1,4 +1,4 @@
-# Cadence
+# cadence
 
 Cross-platform music player with Android remote control. Index your local music library on a Windows or Linux computer, then search and control playback from your phone. Audio plays through the computer’s speakers or headphones.
 
@@ -16,16 +16,17 @@ Open the [latest GitHub release](https://github.com/4p5tatami/cadence/releases/l
 | Linux x64, AppImage | `.AppImage` | Mark the file as executable, then open it. |
 | Android ARM64 | `cadence-v<version>-android-arm64.apk` | Open the APK on your phone and tap **Install**. |
 
-If Android prompts you to allow installation, grant **Allow from this source** to the browser or file manager that opened the APK. [Android installation help](https://support.google.com/pixelphone/answer/7391672?hl=en)
+> [!IMPORTANT]
+> **Windows: select Allow on the firewall prompt.** Cadence advertises itself on your local network over mDNS and accepts connections from the Android app over WebSockets on port 7878. When the desktop app first starts, Windows asks whether to allow it on your network. If you dismiss or cancel that prompt, Windows blocks Cadence and your phone stays on **Searching** forever. See [Phone can't find the computer](#phone-cant-find-the-computer) to fix it.
+
+If Android prompts you to allow installation, grant **Allow from this source** to the browser or file manager that opened the APK.
 
 ## Index and play music
 
 1. Open **Cadence** on your computer and select **Add Folder**. Cadence scans the selected folder and its subfolders. Select **Cancel** in the popup to discard the current scan. The trash button removes a folder from the index and keeps the music files on disk.
 2. Connect the phone and computer to the **same local network** and leave the desktop app open.
 3. Open Cadence on Android and tap your computer under **Available devices**.
-4. Search the indexed library and tap a track to play it on your computer. Use the now-playing bar to pause, resume, stop, skip, or seek.
-
-If your computer doesn’t appear, check that the indexer is open and both devices are on the same network. If the desktop firewall asks about Cadence, allow it on your private network.
+4. Search the indexed library and tap a track to play it on your computer. Use the now-playing bar to pause, resume, stop, skip, seek or adjust your volume. (In-progress)
 
 ## Development
 

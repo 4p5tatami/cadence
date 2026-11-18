@@ -15,7 +15,7 @@ export default function ConnectScreen() {
         <Screen
             headerTitle="Connect"
             title="Connect to Desktop"
-            subtitle="Play music from your library on Cadence desktop. Devices are discovered on your local network."
+            subtitle="Play music from your PC library. Index folders on cadence desktop. Devices are discovered on your local network."
         >
             {error && (
                 <View style={styles.error}>
