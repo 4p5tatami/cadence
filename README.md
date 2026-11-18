@@ -16,6 +16,9 @@ Open the [latest GitHub release](https://github.com/4p5tatami/cadence/releases/l
 | Linux x64, AppImage | `.AppImage` | Mark the file as executable, then open it. |
 | Android ARM64 | `cadence-v<version>-android-arm64.apk` | Open the APK on your phone and tap **Install**. |
 
+> [!IMPORTANT]
+> **Windows: select Allow on the firewall prompt.** Cadence advertises itself on your local network over mDNS and accepts connections from the Android app over WebSockets on port 7878. When the desktop app first starts, Windows asks whether to allow it on your network. If you dismiss or cancel that prompt, Windows blocks Cadence and your phone stays on **Searching** forever. See [Phone can't find the computer](#phone-cant-find-the-computer) to fix it.
+
 If Android prompts you to allow installation, grant **Allow from this source** to the browser or file manager that opened the APK. [Android installation help](https://support.google.com/pixelphone/answer/7391672?hl=en)
 
 ## Index and play music
@@ -25,7 +28,22 @@ If Android prompts you to allow installation, grant **Allow from this source** t
 3. Open Cadence on Android and tap your computer under **Available devices**.
 4. Search the indexed library and tap a track to play it on your computer. Use the now-playing bar to pause, resume, stop, skip, or seek.
 
-If your computer doesn’t appear, check that the indexer is open and both devices are on the same network. If the desktop firewall asks about Cadence, allow it on your private network.
+On Linux, make sure the drives holding your library folders are mounted before you play from them.
+
+### Phone can't find the computer
+
+If your computer doesn’t appear, check that the desktop app is open and both devices are on the same network. A VPN on the computer can also stop the phone from reaching it.
+
+On Windows, a dismissed firewall prompt is the most common cause. To check, open **Windows Defender Firewall with Advanced Security**, go to **Inbound Rules**, and look for a `cadence-desktop.exe` rule with a block icon. Delete those rules and restart Cadence so Windows asks again, or run this in an administrator PowerShell:
+
+```powershell
+Get-NetFirewallApplicationFilter | Where-Object Program -like '*cadence-desktop.exe' |
+  Get-NetFirewallRule | Where-Object Action -eq Block | Remove-NetFirewallRule
+New-NetFirewallRule -DisplayName "Cadence" -Direction Inbound -Action Allow `
+  -Program "$env:LOCALAPPDATA\cadence-desktop\cadence-desktop.exe" -Profile Private,Public
+```
+
+The path above is for the `.exe` installer. If you used the `.msi`, replace it with the path of `cadence-desktop.exe` in your installation folder.
 
 ## Development
 

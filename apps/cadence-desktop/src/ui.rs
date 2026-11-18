@@ -26,6 +26,15 @@ const BORDER: Color = Color::from_hex(0xc9cdd3);
 const DIVIDER: Color = Color::from_hex(0xdadce1);
 const BLUE: Color = Color::from_hex(0x1265e4);
 const DISCONNECTED: &str = "No mobile device connected";
+/// Shown above the folder list where library drives may need mounting.
+#[cfg(target_os = "linux")]
+const MOUNT_NOTE: Option<&str> =
+    Some("Make sure the drives holding your library folders are mounted before playing.");
+#[cfg(all(unix, not(target_os = "linux")))]
+const MOUNT_NOTE: Option<&str> =
+    Some("On Unix systems, external or network drives with library folders must be mounted.");
+#[cfg(not(unix))]
+const MOUNT_NOTE: Option<&str> = None;
 
 #[derive(Clone)]
 pub(crate) enum Message {
@@ -249,6 +258,7 @@ struct LibraryView {
     window: Window,
     heading: Frame,
     add: Button,
+    mount_note: Option<Frame>,
     outline: Frame,
     scroll: Scroll,
     rows: Vec<Group>,
@@ -298,6 +308,15 @@ impl LibraryView {
             draw_focus(button, Color::White);
         });
 
+        let mount_note = MOUNT_NOTE.map(|note| {
+            let mut frame = Frame::default().with_label(note);
+            frame.set_align(Align::Left | Align::Inside | Align::Clip);
+            frame.set_label_size(14);
+            frame.set_label_color(MUTED);
+            frame.set_tooltip(note);
+            frame
+        });
+
         let mut scroll = Scroll::default().with_type(ScrollType::Vertical);
         scroll.set_color(Color::White);
         scroll.set_scrollbar_size(SCROLLBAR_WIDTH);
@@ -326,6 +345,7 @@ impl LibraryView {
             window,
             heading,
             add,
+            mount_note,
             outline,
             scroll,
             rows: Vec::new(),
@@ -399,6 +419,10 @@ impl LibraryView {
             .resize(MARGIN + 7, 43, inner_width - button_width - 19, 52);
         self.add
             .resize(width - MARGIN - button_width - 2, 43, button_width, 52);
+        if let Some(note) = &mut self.mount_note {
+            // Sits in the gap between the heading row and the folder list.
+            note.resize(MARGIN + 7, LIST_TOP - 32, inner_width - 14, 26);
+        }
 
         let rows_height = self.rows.len().max(1) as i32 * ROW_HEIGHT;
         let card_height = (rows_height + 2).min(height - LIST_TOP - 115);
