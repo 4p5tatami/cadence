@@ -17,7 +17,7 @@ Open the [latest GitHub release](https://github.com/4p5tatami/cadence/releases/l
 | Android ARM64 | `cadence-v<version>-android-arm64.apk` | Open the APK on your phone and tap **Install**. |
 
 > [!IMPORTANT]
-> **Windows: select Allow on the firewall prompt.** Cadence advertises itself on your local network over mDNS and accepts connections from the Android app over WebSockets on port 7878. When the desktop app first starts, Windows asks whether to allow it on your network. If you dismiss or cancel that prompt, Windows blocks Cadence and your phone stays on **Searching** forever. See [Phone can't find the computer](#phone-cant-find-the-computer) to fix it.
+> **Windows: select Allow on the firewall prompt.** Cadence advertises itself on your local network over mDNS and accepts connections from the Android app over WebSockets on port 7878. When the desktop app first starts, Windows asks whether to allow it on your network. If you dismiss or cancel that prompt, Windows blocks Cadence and your phone stays on **Searching** forever.
 
 If Android prompts you to allow installation, grant **Allow from this source** to the browser or file manager that opened the APK.
 
