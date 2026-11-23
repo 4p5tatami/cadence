@@ -3,6 +3,6 @@ Name=Cadence
 Comment=Index music folders for the Cadence Android player
 Exec=cadence-desktop
 Icon=cadence-desktop
-Terminal=false
+Terminal=true
 Type=Application
 Categories=AudioVideo;Audio;Player;

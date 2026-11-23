@@ -1,10 +1,7 @@
-#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
-
 mod display;
 mod folder_picker;
 mod player;
 mod terminal;
-mod ui;
 mod websocket;
 
 use std::error::Error;
@@ -26,22 +23,16 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
-    let terminal = command.as_deref().is_some_and(|arg| arg == "--terminal");
-    let app = (!terminal).then(fltk::app::App::default);
-    match run(app.as_ref()) {
+    match run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            let message = format!("Could not start Cadence.\n{error:#}");
-            eprintln!("{message}");
-            if app.is_some() {
-                fltk::dialog::alert_default(&message);
-            }
+            eprintln!("Cadence exited with an error.\n{error:#}");
             ExitCode::FAILURE
         }
     }
 }
 
-fn run(app: Option<&fltk::app::App>) -> Result<(), Box<dyn Error>> {
+fn run() -> Result<(), Box<dyn Error>> {
     // Keep the same data path so upgrades can open existing library indexes.
     let data_dir = dirs::data_dir().ok_or("Could not locate the application data directory")?;
     let library = Arc::new(Library::open(
@@ -58,26 +49,7 @@ fn run(app: Option<&fltk::app::App>) -> Result<(), Box<dyn Error>> {
         "Websocket listening on ws://{}:{PORT}",
         ip.unwrap_or(IpAddr::V4(Ipv4Addr::LOCALHOST))
     );
-    let result = if let Some(app) = app {
-        let (sender, receiver) = fltk::app::channel();
-        let mut last_playback = None;
-        runtime.spawn(websocket::serve(
-            listener,
-            player,
-            Arc::clone(&library),
-            move |connected, status| {
-                let playback = ui::PlaybackDisplay::new(connected, status);
-                if last_playback.as_ref() != Some(&playback) {
-                    last_playback = Some(playback.clone());
-                    sender.send(ui::Message::Playback(playback));
-                }
-            },
-        ));
-        ui::run(app, library, &address_msg, sender, receiver);
-        Ok(())
-    } else {
-        runtime.block_on(terminal::run(listener, player, library, &address_msg))
-    };
+    let result = runtime.block_on(terminal::run(listener, player, library, &address_msg));
     if let Some(mdns) = mdns {
         let _ = mdns.shutdown();
     }

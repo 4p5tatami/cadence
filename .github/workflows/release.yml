@@ -86,14 +86,25 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential cmake pkg-config libasound2-dev libpango1.0-dev \
-            libx11-dev libxcursor-dev libxext-dev libxfixes-dev libxft-dev libxinerama-dev libxrender-dev \
-            libfuse2 patchelf
+          sudo apt-get install -y build-essential pkg-config libasound2-dev libfuse2 patchelf
           cargo install --locked --version 0.21.1 cargo-generate-rpm
       - name: Build desktop executable
         env:
           CADENCE_VERSION: ${{ needs.version.outputs.number }}
         run: cargo build --locked --release -p cadence-desktop
+      - name: Verify desktop console command
+        shell: bash
+        env:
+          VERSION: ${{ needs.version.outputs.number }}
+        run: |
+          binary=./target/release/cadence-desktop
+          if [[ "$RUNNER_OS" == Windows ]]; then
+            binary+=.exe
+          fi
+          if [[ "$("$binary" --version)" != "Cadence $VERSION" ]]; then
+            echo '::error::The desktop executable did not report the release version.'
+            exit 1
+          fi
       - name: Install desktop packager
         run: cargo install --locked --version 0.11.8 cargo-packager
       - name: Package desktop executable

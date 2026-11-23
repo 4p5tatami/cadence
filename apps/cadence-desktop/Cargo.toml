@@ -8,7 +8,6 @@ edition = "2021"
 cadence-core = { path = "../../core/cadence-core" }
 crossterm = { version = "0.29", default-features = false, features = ["event-stream", "windows"] }
 dirs = "6"
-fltk = "1.5"
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 gethostname = "0.4"
 mdns-sd = "0.11"
@@ -20,6 +19,9 @@ tokio-tungstenite = { version = "0.24", default-features = false, features = ["h
 unicode-segmentation = "1.12"
 unicode-width = "0.2"
 
+[target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
+rfd = { version = "0.16", default-features = false }
+
 [package.metadata.generate-rpm]
 license = "Unspecified"
 assets = [
@@ -27,3 +29,6 @@ assets = [
   { source = "assets/cadence-desktop.desktop", dest = "/usr/share/applications/cadence-desktop.desktop", mode = "644" },
   { source = "assets/cadence.png", dest = "/usr/share/icons/hicolor/128x128/apps/cadence-desktop.png", mode = "644" },
 ]
+
+[package.metadata.generate-rpm.requires]
+zenity = "*"

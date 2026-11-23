@@ -16,13 +16,7 @@
   "deb": {
     "depends": [
       "libasound2 | libasound2t64",
-      "libcairo2",
-      "libpango-1.0-0",
-      "libpangocairo-1.0-0",
-      "libx11-6",
-      "libxcursor1",
-      "libxfixes3",
-      "libxinerama1"
+      "zenity"
     ],
     "desktopTemplate": "assets/cadence-desktop.desktop"
   }

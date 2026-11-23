@@ -250,9 +250,7 @@ impl TerminalView {
     fn open() -> io::Result<Self> {
         let stdout = io::stdout();
         if !stdout.is_terminal() || !io::stdin().is_terminal() {
-            return Err(io::Error::other(
-                "--terminal needs an interactive terminal.",
-            ));
+            return Err(io::Error::other("Cadence needs an interactive terminal."));
         }
         terminal::enable_raw_mode()?;
         Ok(Self {
