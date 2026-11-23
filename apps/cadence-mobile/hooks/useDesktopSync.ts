@@ -6,6 +6,11 @@ export interface TrackRecord {
     title: string;
     artist: string;
     duration_ms: number;
+    file_format?: string | null;
+    /** Sample rate in Hz. */
+    sample_rate?: number | null;
+    /** Audio bitrate in kbps. */
+    bitrate?: number | null;
 }
 
 export type PlayerMode = "Default" | "Shuffle" | "Replay";
@@ -14,6 +19,9 @@ export interface PlaybackState {
     trackPath: string;
     title: string | null;
     artist: string | null;
+    fileFormat: string | null;
+    sampleRate: number | null;
+    bitrate: number | null;
     durationMs: number;
     positionMs: number;
     playing: boolean;
@@ -109,6 +117,9 @@ export function useDesktopSync(url: string | null) {
                             trackPath: msg.track_path,
                             title: msg.title ?? null,
                             artist: msg.artist ?? null,
+                            fileFormat: msg.file_format ?? null,
+                            sampleRate: msg.sample_rate ?? null,
+                            bitrate: msg.bitrate ?? null,
                             durationMs: msg.duration_ms,
                             positionMs: msg.position_ms,
                             playing: msg.playing,

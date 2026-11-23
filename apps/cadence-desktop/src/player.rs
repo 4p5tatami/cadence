@@ -36,6 +36,9 @@ pub(crate) struct StatusResponse {
     pub playback_error: Option<String>,
     pub title: Option<String>,
     pub artist: Option<String>,
+    pub file_format: Option<String>,
+    pub sample_rate: Option<u32>,
+    pub bitrate: Option<u32>,
     pub mode: PlayerMode,
 }
 
@@ -54,7 +57,7 @@ fn load(player: &mut Player, path: &Path) -> Result<(), String> {
         .unwrap_or_else(|| path.display().to_string());
     if !path.exists() {
         return Err(format!(
-            "Couldn't find \u{201c}{name}\u{201d}. Is the drive or folder it's on available?"
+            "Couldn't find \u{201c}{name}\u{201d}. Is the drive or folder it's on available? If you are on linux, ensure the drive is mounted."
         ));
     }
     player
@@ -180,6 +183,9 @@ pub(crate) fn spawn(library: Arc<Library>) -> mpsc::Sender<PlayerMessage> {
                         playback_error: player.playback_error().map(str::to_owned),
                         title: track.title.clone(),
                         artist: track.artist.clone(),
+                        file_format: track.file_format.clone(),
+                        sample_rate: track.sample_rate,
+                        bitrate: track.bitrate,
                         mode: player.get_mode(),
                     });
                     reply

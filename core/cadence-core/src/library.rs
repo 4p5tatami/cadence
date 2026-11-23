@@ -1,10 +1,10 @@
+use crate::probe_track;
 use anyhow::{Context, Result};
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, TransactionBehavior};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Mutex;
-use crate::get_tagged_file;
 
 const AUDIO_EXTENSIONS: &[&str] = &[
     "mp3", "flac", "ogg", "wav", "aac", "m4a", "opus", "wv", "ape",
@@ -47,6 +47,11 @@ pub struct TrackRecord {
     pub title: String,
     pub artist: String,
     pub duration_ms: u64,
+    pub file_format: Option<String>,
+    /// Sample rate in Hz.
+    pub sample_rate: Option<u32>,
+    /// Audio bitrate in kbps.
+    pub bitrate: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -60,11 +65,13 @@ impl Library {
         if let Some(parent) = db_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let conn = Connection::open(db_path)
+        let mut conn = Connection::open(db_path)
             .with_context(|| format!("Failed to open DB at {:?}", db_path))?;
 
         conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
-        conn.execute_batch("
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        tx.execute_batch(
+            "
             CREATE TABLE IF NOT EXISTS libraries (
                 id   INTEGER PRIMARY KEY,
                 path TEXT UNIQUE NOT NULL
@@ -79,21 +86,49 @@ impl Library {
                 path        TEXT UNIQUE NOT NULL,
                 title       TEXT NOT NULL,
                 artist_id   INTEGER NOT NULL REFERENCES artists(id),
-                duration_ms INTEGER NOT NULL
+                duration_ms INTEGER NOT NULL,
+                file_format TEXT,
+                sample_rate INTEGER,
+                bitrate     INTEGER
             );
             CREATE VIRTUAL TABLE IF NOT EXISTS tracks_fts USING fts5 (title, artist, filename);
-        ")?;
+        ",
+        )?;
+        // Existing indexes gain nullable columns so opening one does not have to reread audio files.
+        let columns = {
+            let mut statement = tx.prepare("SELECT name FROM pragma_table_info('tracks')")?;
+            let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        for (column, sql) in [
+            (
+                "file_format",
+                "ALTER TABLE tracks ADD COLUMN file_format TEXT",
+            ),
+            (
+                "sample_rate",
+                "ALTER TABLE tracks ADD COLUMN sample_rate INTEGER",
+            ),
+            ("bitrate", "ALTER TABLE tracks ADD COLUMN bitrate INTEGER"),
+        ] {
+            if !columns.iter().any(|existing| existing == column) {
+                tx.execute(sql, [])?;
+            }
+        }
 
         // Ensure the sentinel artist always exists.
-        conn.execute(
+        tx.execute(
             "INSERT OR IGNORE INTO artists (name) VALUES (?1)",
             params![UNKNOWN_ARTIST],
         )?;
+        tx.commit()?;
 
-        Ok(Self { conn: Mutex::new(conn) })
+        Ok(Self {
+            conn: Mutex::new(conn),
+        })
     }
 
-    /// Walk `dir`, probe every audio file for tags + duration, and upsert into DB.
+    /// Walk `dir`, probe every audio file for tags and audio properties, and upsert into DB.
     /// Re-indexes from scratch on repeated calls (stale tracks are removed first).
     /// Returns the number of tracks inserted.
     ///
@@ -108,12 +143,35 @@ impl Library {
             .map(|count| count.expect("the index was never cancelled"))
     }
 
+    /// Reports the number of files probed and the total audio files found, starting at zero.
+    pub fn index_directory_with_progress(
+        &self,
+        dir: &Path,
+        on_progress: impl FnMut(usize, usize),
+    ) -> Result<usize> {
+        self.index_directory_inner(dir, &IndexCancellation::default(), on_progress)
+            .map(|count| count.expect("the index was never cancelled"))
+    }
+
     /// Returns `None` if cancelled. Use one cancellation handle per scan.
     pub fn index_directory_cancellable(
         &self,
         dir: &Path,
         cancellation: &IndexCancellation,
-        on_progress: impl FnMut(usize),
+        mut on_progress: impl FnMut(usize),
+    ) -> Result<Option<usize>> {
+        self.index_directory_inner(dir, cancellation, |scanned, _| {
+            if scanned > 0 {
+                on_progress(scanned);
+            }
+        })
+    }
+
+    fn index_directory_inner(
+        &self,
+        dir: &Path,
+        cancellation: &IndexCancellation,
+        on_progress: impl FnMut(usize, usize),
     ) -> Result<Option<usize>> {
         let scanned = scan_directory(dir, cancellation, on_progress);
         if cancellation.is_cancelled() {
@@ -149,8 +207,9 @@ impl Library {
             let mut insert_artist = tx.prepare("INSERT OR IGNORE INTO artists (name) VALUES (?1)")?;
             let mut select_artist = tx.prepare("SELECT id FROM artists WHERE name = ?1")?;
             let mut insert_track = tx.prepare(
-                "INSERT OR IGNORE INTO tracks (library_id, path, title, artist_id, duration_ms)
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                "INSERT OR IGNORE INTO tracks
+                    (library_id, path, title, artist_id, duration_ms, file_format, sample_rate, bitrate)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             )?;
             let mut insert_fts = tx.prepare(
                 "INSERT INTO tracks_fts(rowid, title, artist, filename) VALUES (?1, ?2, ?3, ?4)",
@@ -169,6 +228,9 @@ impl Library {
                     track.title,
                     artist_id,
                     track.duration_ms as i64,
+                    track.file_format,
+                    track.sample_rate,
+                    track.bitrate,
                 ])?;
 
                 if rows > 0 {
@@ -202,16 +264,16 @@ impl Library {
             .join(" ");
 
         let conn = self.conn.lock().unwrap();
-        let mut statement =
-            conn.prepare(
-            "SELECT t.id, t.path, t.title, a.name, t.duration_ms
+        let mut statement = conn.prepare(
+            "SELECT t.id, t.path, t.title, a.name, t.duration_ms,
+                    t.file_format, t.sample_rate, t.bitrate
                  FROM tracks_fts f
                  JOIN tracks t ON t.id = f.rowid
                  JOIN artists a ON a.id = t.artist_id
                  WHERE tracks_fts MATCH ?1
                  ORDER BY rank
                  LIMIT 50",
-            )?;
+        )?;
 
         let tracks = statement
             .query_map(params![fts_query], |row| {
@@ -221,6 +283,9 @@ impl Library {
                     title: row.get(2)?,
                     artist: row.get(3)?,
                     duration_ms: row.get::<_, i64>(4)? as u64,
+                    file_format: row.get(5)?,
+                    sample_rate: row.get(6)?,
+                    bitrate: row.get(7)?,
                 })
             })?
             .filter_map(|r| r.ok())
@@ -276,19 +341,22 @@ struct ScannedTrack {
     title: String,
     artist: String,
     duration_ms: u64,
+    file_format: Option<String>,
+    sample_rate: Option<u32>,
+    bitrate: Option<u32>,
 }
 
 /// Walk `dir` and probe every audio file. Touches only the filesystem, never the DB.
 fn scan_directory(
     dir: &Path,
     cancellation: &IndexCancellation,
-    mut on_progress: impl FnMut(usize),
+    mut on_progress: impl FnMut(usize, usize),
 ) -> Vec<ScannedTrack> {
-    let mut tracks = Vec::new();
+    let mut paths = Vec::new();
 
     for entry in walkdir::WalkDir::new(dir).follow_links(true) {
         if cancellation.is_cancelled() {
-            break;
+            return Vec::new();
         }
         let Ok(entry) = entry else { continue };
         if !entry.file_type().is_file() {
@@ -303,8 +371,17 @@ fn scan_directory(
         if !AUDIO_EXTENSIONS.contains(&ext.as_str()) {
             continue;
         }
+        paths.push(entry.into_path());
+    }
 
-        let (title, artist, duration_ms) = probe_track(path);
+    let total = paths.len();
+    on_progress(0, total);
+    let mut tracks = Vec::with_capacity(total);
+    for path in paths {
+        if cancellation.is_cancelled() {
+            break;
+        }
+        let metadata = probe_track(&path);
 
         let filename = path
             .file_stem()
@@ -313,39 +390,31 @@ fn scan_directory(
             .to_string();
 
         // Filename fallback for title.
-        let title = title.unwrap_or_else(|| {
-            if filename.is_empty() { "Unknown Track".to_string() } else { filename.clone() }
+        let title = metadata.title.unwrap_or_else(|| {
+            if filename.is_empty() {
+                "Unknown Track".to_string()
+            } else {
+                filename.clone()
+            }
         });
-        let artist = artist.unwrap_or_else(|| UNKNOWN_ARTIST.to_string());
+        let artist = metadata
+            .artist
+            .unwrap_or_else(|| UNKNOWN_ARTIST.to_string());
 
         tracks.push(ScannedTrack {
             path: path.to_string_lossy().into_owned(),
             filename,
             title,
             artist,
-            duration_ms,
+            duration_ms: metadata.duration_ms,
+            file_format: metadata.file_format,
+            sample_rate: metadata.sample_rate,
+            bitrate: metadata.bitrate,
         });
-        on_progress(tracks.len());
+        on_progress(tracks.len(), total);
     }
 
     tracks
-}
-
-fn probe_track(path: &Path) -> (Option<String>, Option<String>, u64) {
-    use lofty::prelude::*;
-
-    let Some(tagged) = 
-        get_tagged_file(path)
-    else {
-        return (None, None, 0);
-    };
-
-    let duration_ms = tagged.properties().duration().as_millis() as u64;
-    let tag = tagged.primary_tag().or_else(|| tagged.first_tag());
-    let title = tag.and_then(|t| t.title().as_deref().map(String::from));
-    let artist = tag.and_then(|t| t.artist().as_deref().map(String::from));
-
-    (title, artist, duration_ms)
 }
 
 #[cfg(test)]
@@ -409,14 +478,19 @@ mod tests {
         let library = Library::open(&root.join("cadence.db")).unwrap();
 
         let mut progress = Vec::new();
-        let count = library.index_directory(&music, |n| progress.push(n)).unwrap();
+        let count = library
+            .index_directory_with_progress(&music, |scanned, total| progress.push((scanned, total)))
+            .unwrap();
         assert_eq!(count, 2);
-        assert_eq!(progress, vec![1, 2]);
+        assert_eq!(progress, vec![(0, 2), (1, 2), (2, 2)]);
 
         let hits = library.search("second").unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].title, "second song");
         assert_eq!(hits[0].artist, UNKNOWN_ARTIST);
+        assert_eq!(hits[0].file_format, None);
+        assert_eq!(hits[0].sample_rate, None);
+        assert_eq!(hits[0].bitrate, None);
 
         // Re-indexing replaces stale rows instead of duplicating or dropping them.
         std::fs::remove_file(music.join("first song.flac")).unwrap();
@@ -432,5 +506,53 @@ mod tests {
         assert!(library.all_track_paths().unwrap().is_empty());
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn legacy_indexes_keep_search_results_and_gain_audio_properties_on_rescan() {
+        let root = scratch_dir("audio-properties");
+        let music = root.join("music");
+        std::fs::create_dir(&music).unwrap();
+        std::fs::write(
+            music.join("sample.flac"),
+            include_bytes!("../tests/fixtures/nonzero-origin.ogg"),
+        )
+        .unwrap();
+        let db_path = root.join("cadence.db");
+        let library = Library::open(&db_path).unwrap();
+        library.index_directory(&music, |_| {}).unwrap();
+        let indexed = library.search("sample").unwrap().pop().unwrap();
+        assert_eq!(indexed.file_format.as_deref(), Some("OGG"));
+        assert_eq!(indexed.sample_rate, Some(44_100));
+        assert!(indexed.bitrate.is_some_and(|bitrate| bitrate > 0));
+        drop(library);
+
+        Connection::open(&db_path)
+            .unwrap()
+            .execute_batch(
+                "ALTER TABLE tracks DROP COLUMN file_format;
+                 ALTER TABLE tracks DROP COLUMN sample_rate;
+                 ALTER TABLE tracks DROP COLUMN bitrate;",
+            )
+            .unwrap();
+
+        let library = Library::open(&db_path).unwrap();
+        let migrated = library.search("sample").unwrap().pop().unwrap();
+        assert_eq!(migrated.id, indexed.id);
+        assert_eq!(migrated.path, indexed.path);
+        assert_eq!(migrated.duration_ms, indexed.duration_ms);
+        assert_eq!(migrated.file_format, None);
+        assert_eq!(migrated.sample_rate, None);
+        assert_eq!(migrated.bitrate, None);
+
+        library.index_directory(&music, |_| {}).unwrap();
+        drop(library);
+        let library = Library::open(&db_path).unwrap();
+        let rescanned = library.search("sample").unwrap().pop().unwrap();
+        assert_eq!(rescanned.file_format, indexed.file_format);
+        assert_eq!(rescanned.sample_rate, indexed.sample_rate);
+        assert_eq!(rescanned.bitrate, indexed.bitrate);
+        drop(library);
+        let _ = std::fs::remove_dir_all(root);
     }
 }

@@ -1,11 +1,12 @@
 import { Pressable, StyleSheet, Text, useWindowDimensions, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { Feather, Ionicons } from "@expo/vector-icons";
+import { Feather, Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { router } from "expo-router";
 import { Screen } from "@/components/Screen";
 import { SeekBar } from "@/components/SeekBar";
 import { VolumeControl } from "@/components/VolumeControl";
 import { colors, fonts, GUTTER, radius, spacing, type } from "@/constants/theme";
+import type { PlaybackState } from "@/hooks/useDesktopSync";
 import { useCadence } from "@/providers/CadenceProvider";
 
 // Layout measured from the Now Playing mockup (390 pt wide screen).
@@ -87,6 +88,11 @@ export default function NowPlayingScreen() {
                                 <Ionicons name="play-skip-forward" size={30} color={colors.text} />
                             </Pressable>
                         </View>
+                        <AudioMetadata
+                            fileFormat={playback.fileFormat}
+                            sampleRate={playback.sampleRate}
+                            bitrate={playback.bitrate}
+                        />
                     </>
                 )}
             </Screen>
@@ -100,6 +106,33 @@ export default function NowPlayingScreen() {
                     style={[styles.volume, { top: insets.top + TOP_BAR + ART_TOP + (artSize - VOLUME_HEIGHT) / 2 }]}
                 />
             )}
+        </View>
+    );
+}
+
+function AudioMetadata({ fileFormat, sampleRate, bitrate }: Pick<PlaybackState, "fileFormat" | "sampleRate" | "bitrate">) {
+    const sampleRateLabel = sampleRate === null ? "—" : `${sampleRate / 1000} kHz`;
+    const bitrateLabel = bitrate === null ? "—" : `${bitrate} kbps`;
+    return (
+        <View
+            style={styles.metadata}
+            accessible
+            accessibilityLabel={`Format ${fileFormat ?? "unavailable"}, sample rate ${sampleRate === null ? "unavailable" : sampleRateLabel}, bitrate ${bitrate === null ? "unavailable" : bitrateLabel}`}
+        >
+            <View style={styles.metadataCell}>
+                <Feather name="layers" size={16} color={colors.accentIcon} />
+                <Text style={styles.metadataText} numberOfLines={1}>{fileFormat ?? "—"}</Text>
+            </View>
+            <View style={styles.metadataDivider} />
+            <View style={styles.metadataCell}>
+                <MaterialCommunityIcons name="waveform" size={18} color={colors.accentIcon} />
+                <Text style={styles.metadataText} numberOfLines={1}>{sampleRateLabel}</Text>
+            </View>
+            <View style={styles.metadataDivider} />
+            <View style={styles.metadataCell}>
+                <Ionicons name="speedometer-outline" size={18} color={colors.textMuted} />
+                <Text style={styles.metadataText} numberOfLines={1}>{bitrateLabel}</Text>
+            </View>
         </View>
     );
 }
@@ -162,5 +195,20 @@ const styles = StyleSheet.create({
     },
     // Optically centre the play triangle.
     playNudge: { marginLeft: 3 },
+    metadata: {
+        flexDirection: "row",
+        alignItems: "center",
+        marginTop: spacing.xxl,
+        marginHorizontal: SEEK_INSET - GUTTER,
+    },
+    metadataCell: {
+        flex: 1,
+        flexDirection: "row",
+        alignItems: "center",
+        justifyContent: "center",
+        gap: spacing.sm,
+    },
+    metadataText: { ...type.caption, flexShrink: 1 },
+    metadataDivider: { width: 1, height: 18, backgroundColor: colors.track },
     volume: { position: "absolute", right: 6, height: VOLUME_HEIGHT },
 });

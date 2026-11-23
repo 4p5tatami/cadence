@@ -6,7 +6,6 @@ use cadence_core::{library::IndexCancellation, Library, LibraryRecord};
 use fltk::{
     app,
     button::Button,
-    dialog::{FileDialog, FileDialogAction, FileDialogType},
     draw::{self, LineStyle},
     enums::{Align, Color, Font, FrameType},
     frame::Frame,
@@ -15,6 +14,10 @@ use fltk::{
     prelude::*,
     window::Window,
 };
+
+use crate::display::{format_time, track_info};
+use crate::folder_picker::choose_music_folder;
+use crate::player::StatusResponse;
 
 const MARGIN: i32 = 30;
 const LIST_TOP: i32 = 134;
@@ -42,7 +45,7 @@ pub(crate) enum Message {
     RemoveFolder(i64),
     ScanProgress(usize),
     Finished(Result<(), String>),
-    Playback(String),
+    Playback(PlaybackDisplay),
 }
 
 enum Operation {
@@ -72,27 +75,22 @@ pub(crate) fn run(
         }
         while let Some(message) = receiver.recv() {
             let operation = match message {
-                Message::Playback(label) => {
-                    view.playback.set_label(&label);
-                    view.playback.set_tooltip(&label);
+                Message::Playback(playback) => {
+                    view.playback.set_label(&playback.label);
+                    view.playback.set_tooltip(&playback.label);
                     view.playback.redraw();
+                    view.playback_time.set_label(&playback.time);
+                    view.playback_time.redraw();
                     continue;
                 }
-                Message::AddFolder if !busy => {
-                    let mut picker = FileDialog::new(FileDialogType::BrowseDir);
-                    picker.set_title("Add Music Folder");
-                    match picker.try_show() {
-                        Ok(FileDialogAction::Success) => Operation::Index(picker.filename()),
-                        Ok(FileDialogAction::Cancelled) => continue,
-                        Err(error) => {
-                            view.set_status(
-                                &format!("Could not open folder picker. {error}"),
-                                true,
-                            );
-                            continue;
-                        }
+                Message::AddFolder if !busy => match choose_music_folder() {
+                    Ok(Some(path)) => Operation::Index(path),
+                    Ok(None) => continue,
+                    Err(error) => {
+                        view.set_status(&error, true);
+                        continue;
                     }
-                }
+                },
                 Message::RemoveFolder(id) if !busy => Operation::Remove(id),
                 Message::ScanProgress(count) => {
                     if let Some(dialog) = &mut indexing {
@@ -216,31 +214,38 @@ impl IndexDialog {
     }
 }
 
-pub(crate) fn playback_label(
-    connected: bool,
-    status: Option<&crate::player::StatusResponse>,
-) -> String {
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct PlaybackDisplay {
+    label: String,
+    time: String,
+}
+
+impl PlaybackDisplay {
+    pub(crate) fn new(connected: bool, status: Option<&StatusResponse>) -> Self {
+        let time = status
+            .map(|track| {
+                format!(
+                    "{}/{}",
+                    format_time(track.position_ms, 1),
+                    format_time(track.duration_ms, 1)
+                )
+            })
+            .unwrap_or_default();
+        Self {
+            label: playback_label(connected, status),
+            time,
+        }
+    }
+}
+
+fn playback_label(connected: bool, status: Option<&StatusResponse>) -> String {
     if !connected {
         return DISCONNECTED.into();
     }
     let Some(status) = status else {
         return "Stopped".into();
     };
-    let name = status
-        .title
-        .as_deref()
-        .filter(|title| !title.trim().is_empty())
-        .or_else(|| {
-            Path::new(&status.path)
-                .file_stem()
-                .and_then(|stem| stem.to_str())
-        })
-        .unwrap_or("Unknown Track");
-    let artist = status
-        .artist
-        .as_deref()
-        .filter(|artist| !artist.trim().is_empty())
-        .unwrap_or("Unknown Artist");
+    let (name, artist) = track_info(status);
     let state = if status.is_playing() {
         "Now playing"
     } else {
@@ -264,6 +269,7 @@ struct LibraryView {
     rows: Vec<Group>,
     status: Frame,
     playback: Frame,
+    playback_time: Frame,
     address: Frame,
 }
 
@@ -334,6 +340,10 @@ impl LibraryView {
         playback.set_align(Align::Left | Align::Inside | Align::Clip);
         playback.set_label_size(16);
         playback.set_label_color(TEXT);
+        let mut playback_time = Frame::default();
+        playback_time.set_align(Align::Left | Align::Inside | Align::Clip);
+        playback_time.set_label_size(13);
+        playback_time.set_label_color(MUTED);
         let mut address = Frame::default().with_label(address);
         address.set_align(Align::Left | Align::Inside | Align::Clip);
         address.set_label_size(15);
@@ -351,6 +361,7 @@ impl LibraryView {
             rows: Vec::new(),
             status,
             playback,
+            playback_time,
             address,
         };
         view.layout();
@@ -425,7 +436,7 @@ impl LibraryView {
         }
 
         let rows_height = self.rows.len().max(1) as i32 * ROW_HEIGHT;
-        let card_height = (rows_height + 2).min(height - LIST_TOP - 115);
+        let card_height = (rows_height + 2).min(height - LIST_TOP - 135);
         let scrollable = rows_height > card_height - 2;
         let row_width = inner_width - 2 - if scrollable { SCROLLBAR_WIDTH } else { 0 };
         self.outline
@@ -444,8 +455,10 @@ impl LibraryView {
         let below_list = LIST_TOP + card_height;
         self.playback
             .resize(MARGIN + 6, below_list + 8, inner_width - 12, 24);
+        self.playback_time
+            .resize(MARGIN + 6, below_list + 32, inner_width - 12, 20);
         self.status
-            .resize(MARGIN + 6, below_list + 32, inner_width - 12, 49);
+            .resize(MARGIN + 6, below_list + 52, inner_width - 12, 49);
         self.address
             .resize(MARGIN + 6, height - 33, inner_width - 12, 22);
         self.window.redraw();
@@ -554,7 +567,7 @@ fn draw_trash(x: i32, y: i32, color: Color) {
 
 #[cfg(test)]
 mod tests {
-    use super::playback_label;
+    use super::{playback_label, PlaybackDisplay};
     use crate::player::StatusResponse;
     use cadence_core::{OutputState, PlayerMode};
 
@@ -562,13 +575,16 @@ mod tests {
     fn playback_line_reflects_connection_and_player_state() {
         let mut status = StatusResponse {
             path: "track.wav".into(),
-            duration_ms: 1000,
-            position_ms: 0,
+            duration_ms: 227_000,
+            position_ms: 50_900,
             paused: false,
             output_state: OutputState::Ready,
             playback_error: None,
             title: Some("Title".into()),
             artist: Some("Artist".into()),
+            file_format: None,
+            sample_rate: None,
+            bitrate: None,
             mode: PlayerMode::Default,
         };
         assert_eq!(
@@ -576,11 +592,15 @@ mod tests {
             "No mobile device connected"
         );
         assert_eq!(playback_label(true, None), "Stopped");
+        assert_eq!(PlaybackDisplay::new(true, None).time, "");
+        assert_eq!(PlaybackDisplay::new(false, Some(&status)).time, "0:50/3:47");
         assert_eq!(
             playback_label(true, Some(&status)),
             "Now playing: Title by Artist"
         );
         status.paused = true;
+        status.position_ms = 65_000;
+        assert_eq!(PlaybackDisplay::new(true, Some(&status)).time, "1:05/3:47");
         assert_eq!(
             playback_label(true, Some(&status)),
             "Paused: Title by Artist"
