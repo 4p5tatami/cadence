@@ -1,4 +1,6 @@
+use std::cell::RefCell;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -26,6 +28,8 @@ const BORDER: Color = Color::from_hex(0xc9cdd3);
 const DIVIDER: Color = Color::from_hex(0xdadce1);
 const BLUE: Color = Color::from_hex(0x1265e4);
 const DISCONNECTED: &str = "No mobile device connected";
+const PLAYBACK_ROW_HEIGHT: i32 = 17;
+const PLAYBACK_HEIGHT: i32 = 5 * PLAYBACK_ROW_HEIGHT;
 /// Shown above the folder list where library drives may need mounting.
 #[cfg(target_os = "linux")]
 const MOUNT_NOTE: Option<&str> =
@@ -42,7 +46,7 @@ pub(crate) enum Message {
     RemoveFolder(i64),
     ScanProgress(usize),
     Finished(Result<(), String>),
-    Playback(String),
+    Playback(PlaybackDisplay),
 }
 
 enum Operation {
@@ -72,10 +76,8 @@ pub(crate) fn run(
         }
         while let Some(message) = receiver.recv() {
             let operation = match message {
-                Message::Playback(label) => {
-                    view.playback.set_label(&label);
-                    view.playback.set_tooltip(&label);
-                    view.playback.redraw();
+                Message::Playback(display) => {
+                    view.playback.update(display);
                     continue;
                 }
                 Message::AddFolder if !busy => {
@@ -216,16 +218,7 @@ impl IndexDialog {
     }
 }
 
-pub(crate) fn playback_label(
-    connected: bool,
-    status: Option<&crate::player::StatusResponse>,
-) -> String {
-    if !connected {
-        return DISCONNECTED.into();
-    }
-    let Some(status) = status else {
-        return "Stopped".into();
-    };
+fn track_names(status: &crate::player::StatusResponse) -> (&str, &str) {
     let name = status
         .title
         .as_deref()
@@ -241,12 +234,163 @@ pub(crate) fn playback_label(
         .as_deref()
         .filter(|artist| !artist.trim().is_empty())
         .unwrap_or("Unknown Artist");
+    (name, artist)
+}
+
+fn playback_label(connected: bool, status: Option<&crate::player::StatusResponse>) -> String {
+    if !connected {
+        return DISCONNECTED.into();
+    }
+    let Some(status) = status else {
+        return "Stopped".into();
+    };
+    let (name, artist) = track_names(status);
     let state = if status.is_playing() {
         "Now playing"
     } else {
         "Paused"
     };
     format!("{state}: {name} by {artist}").replace(['\n', '\r'], " ")
+}
+
+#[derive(Clone)]
+pub(crate) struct PlaybackDisplay {
+    title: String,
+    time: String,
+    metadata: String,
+    tooltip: String,
+}
+
+impl PlaybackDisplay {
+    pub(crate) fn new(connected: bool, status: Option<&crate::player::StatusResponse>) -> Self {
+        let tooltip = playback_label(connected, status);
+        let Some(status) = status else {
+            return Self {
+                title: if connected {
+                    "Nothing playing"
+                } else {
+                    "Waiting for phone"
+                }
+                .into(),
+                time: String::new(),
+                metadata: String::new(),
+                tooltip,
+            };
+        };
+        let (title, artist) = track_names(status);
+        let format = status.file_format.as_deref().unwrap_or("--");
+        let rate = status.sample_rate.map_or_else(
+            || "--".into(),
+            |hz| format!("{} kHz", f64::from(hz) / 1000.0),
+        );
+        let bitrate = status
+            .bitrate
+            .map_or_else(|| "--".into(), |rate| format!("{rate} kbps"));
+        Self {
+            title: format!("{title} - {artist}").replace(char::is_control, " "),
+            time: format!(
+                "{} / {}",
+                format_playback_time(status.position_ms),
+                format_playback_time(status.duration_ms),
+            ),
+            metadata: format!("{format}  |  {rate}  |  {bitrate}").replace(char::is_control, " "),
+            tooltip,
+        }
+    }
+}
+
+fn format_playback_time(ms: u64) -> String {
+    let seconds = ms / 1000;
+    format!("{:02}:{:02}", seconds / 60, seconds % 60)
+}
+
+struct PlaybackBox {
+    frame: Frame,
+    content: Rc<RefCell<(PlaybackDisplay, Instant)>>,
+}
+
+impl PlaybackBox {
+    fn new() -> Self {
+        let mut frame = Frame::default();
+        frame.set_tooltip(DISCONNECTED);
+        let content = Rc::new(RefCell::new((
+            PlaybackDisplay::new(false, None),
+            Instant::now(),
+        )));
+        let drawn_content = Rc::clone(&content);
+        frame.draw(move |frame| {
+            let content = drawn_content.borrow();
+            draw_playback_box(frame, &content.0, content.1.elapsed());
+        });
+        Self { frame, content }
+    }
+
+    fn update(&mut self, display: PlaybackDisplay) {
+        let mut content = self.content.borrow_mut();
+        if content.0.title != display.title {
+            content.1 = Instant::now();
+        }
+        if content.0.tooltip != display.tooltip {
+            self.frame.set_tooltip(&display.tooltip);
+        }
+        content.0 = display;
+        self.frame.redraw();
+    }
+}
+
+fn draw_playback_box(frame: &Frame, display: &PlaybackDisplay, elapsed: Duration) {
+    draw::set_draw_color(Color::White);
+    draw::draw_rectf(frame.x(), frame.y(), frame.w(), frame.h());
+    draw::set_draw_color(TEXT);
+    draw::set_font(Font::Courier, 13);
+    let cell = draw::width(" ").max(1.0);
+    let columns = ((f64::from(frame.w()) / cell) as usize).min(58);
+    let border = format!("+{}+", "-".repeat(columns.saturating_sub(2)));
+    let side = format!("|{}|", " ".repeat(columns.saturating_sub(2)));
+    let x = frame.x();
+    let y = frame.y();
+    let baseline = y + (PLAYBACK_ROW_HEIGHT + draw::height()) / 2 - draw::descent();
+    for (row, text) in [&border, &side, &side, &side, &border]
+        .into_iter()
+        .enumerate()
+    {
+        draw::draw_text(text, x, baseline + row as i32 * PLAYBACK_ROW_HEIGHT);
+    }
+
+    let inset = (2.0 * cell).round() as i32;
+    let text_x = x + inset;
+    let text_width = (columns.saturating_sub(4) as f64 * cell).round() as i32;
+    draw::push_clip(
+        text_x,
+        y + PLAYBACK_ROW_HEIGHT,
+        text_width,
+        3 * PLAYBACK_ROW_HEIGHT,
+    );
+    let centered = |text: &str, row: i32| {
+        let offset = (f64::from(text_width) - draw::width(text)) / 2.0;
+        draw::draw_text(
+            text,
+            text_x + offset.max(0.0).round() as i32,
+            baseline + row * PLAYBACK_ROW_HEIGHT,
+        );
+    };
+    if display.time.is_empty() {
+        centered(&display.title, 1);
+    } else {
+        let title_width = draw::width(&display.title);
+        let cycle = (title_width + 6.0 * cell).max(f64::from(text_width));
+        let offset = (elapsed.as_secs_f64() * cell / 0.15) % cycle;
+        let title_y = baseline + PLAYBACK_ROW_HEIGHT;
+        draw::draw_text(&display.title, text_x - offset.round() as i32, title_y);
+        draw::draw_text(
+            &display.title,
+            text_x + (cycle - offset).round() as i32,
+            title_y,
+        );
+        centered(&display.time, 2);
+        centered(&display.metadata, 3);
+    }
+    draw::pop_clip();
 }
 
 fn track_count(count: usize) -> String {
@@ -263,7 +407,7 @@ struct LibraryView {
     scroll: Scroll,
     rows: Vec<Group>,
     status: Frame,
-    playback: Frame,
+    playback: PlaybackBox,
     address: Frame,
 }
 
@@ -271,7 +415,7 @@ impl LibraryView {
     fn new(sender: app::Sender<Message>, address: &str) -> Self {
         let mut window = Window::new(0, 0, 770, 530, "cadence desktop").center_screen();
         window.set_color(Color::White);
-        window.size_range(540, 320, 0, 0);
+        window.size_range(540, 381, 0, 0);
         if let Ok(icon) = PngImage::from_data(include_bytes!("../assets/cadence.png")) {
             window.set_icon(Some(icon));
         }
@@ -330,10 +474,7 @@ impl LibraryView {
         let mut status = Frame::default();
         status.set_align(Align::Left | Align::Inside | Align::Wrap | Align::Clip);
         status.set_label_size(15);
-        let mut playback = Frame::default().with_label(DISCONNECTED);
-        playback.set_align(Align::Left | Align::Inside | Align::Clip);
-        playback.set_label_size(16);
-        playback.set_label_color(TEXT);
+        let playback = PlaybackBox::new();
         let mut address = Frame::default().with_label(address);
         address.set_align(Align::Left | Align::Inside | Align::Clip);
         address.set_label_size(15);
@@ -425,7 +566,7 @@ impl LibraryView {
         }
 
         let rows_height = self.rows.len().max(1) as i32 * ROW_HEIGHT;
-        let card_height = (rows_height + 2).min(height - LIST_TOP - 115);
+        let card_height = (rows_height + 2).min(height - LIST_TOP - 91 - PLAYBACK_HEIGHT);
         let scrollable = rows_height > card_height - 2;
         let row_width = inner_width - 2 - if scrollable { SCROLLBAR_WIDTH } else { 0 };
         self.outline
@@ -442,10 +583,18 @@ impl LibraryView {
             row.resize(MARGIN + 1, y, row_width, ROW_HEIGHT);
         }
         let below_list = LIST_TOP + card_height;
-        self.playback
-            .resize(MARGIN + 6, below_list + 8, inner_width - 12, 24);
-        self.status
-            .resize(MARGIN + 6, below_list + 32, inner_width - 12, 49);
+        self.playback.frame.resize(
+            MARGIN + 6,
+            below_list + 8,
+            inner_width - 12,
+            PLAYBACK_HEIGHT,
+        );
+        self.status.resize(
+            MARGIN + 6,
+            below_list + 8 + PLAYBACK_HEIGHT,
+            inner_width - 12,
+            49,
+        );
         self.address
             .resize(MARGIN + 6, height - 33, inner_width - 12, 22);
         self.window.redraw();
@@ -554,7 +703,7 @@ fn draw_trash(x: i32, y: i32, color: Color) {
 
 #[cfg(test)]
 mod tests {
-    use super::playback_label;
+    use super::{playback_label, PlaybackDisplay};
     use crate::player::StatusResponse;
     use cadence_core::{OutputState, PlayerMode};
 
@@ -562,16 +711,16 @@ mod tests {
     fn playback_line_reflects_connection_and_player_state() {
         let mut status = StatusResponse {
             path: "track.wav".into(),
-            duration_ms: 1000,
-            position_ms: 0,
+            duration_ms: 227_000,
+            position_ms: 50_900,
             paused: false,
             output_state: OutputState::Ready,
             playback_error: None,
             title: Some("Title".into()),
             artist: Some("Artist".into()),
-            file_format: None,
-            sample_rate: None,
-            bitrate: None,
+            file_format: Some("FLAC".into()),
+            sample_rate: Some(44_100),
+            bitrate: Some(957),
             mode: PlayerMode::Default,
         };
         assert_eq!(
@@ -579,6 +728,11 @@ mod tests {
             "No mobile device connected"
         );
         assert_eq!(playback_label(true, None), "Stopped");
+        let display = PlaybackDisplay::new(false, Some(&status));
+        assert_eq!(display.title, "Title - Artist");
+        assert_eq!(display.time, "00:50 / 03:47");
+        assert_eq!(display.metadata, "FLAC  |  44.1 kHz  |  957 kbps");
+        assert!(PlaybackDisplay::new(true, None).time.is_empty());
         assert_eq!(
             playback_label(true, Some(&status)),
             "Now playing: Title by Artist"

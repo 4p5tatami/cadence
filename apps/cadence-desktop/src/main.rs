@@ -49,24 +49,27 @@ fn run(app: &fltk::app::App) -> Result<(), Box<dyn Error>> {
         .map_err(|error| format!("Could not listen on port {PORT}. {error}"))?;
     let player = player::spawn(Arc::clone(&library));
     let (sender, receiver) = fltk::app::channel();
-    let mut last_label = String::new();
+    let mut last_idle_connection = None;
     runtime.spawn(websocket::serve(
         listener,
         player,
         Arc::clone(&library),
         move |connected, status| {
-            let label = ui::playback_label(connected, status);
-            if label != last_label {
-                last_label.clone_from(&label);
-                sender.send(ui::Message::Playback(label));
+            // Active snapshots also drive the marquee, including while playback is paused.
+            let idle_connection = status.is_none().then_some(connected);
+            if idle_connection.is_none() || idle_connection != last_idle_connection {
+                sender.send(ui::Message::Playback(ui::PlaybackDisplay::new(
+                    connected, status,
+                )));
             }
+            last_idle_connection = idle_connection;
         },
     ));
 
     let ip = lan_ip().ok();
     let mdns = ip.and_then(|ip| advertise_on_lan(ip).ok());
     let address = format!(
-        "ws://{}:{PORT}",
+        "Websocket listening on ws://{}:{PORT}",
         ip.unwrap_or(IpAddr::V4(Ipv4Addr::LOCALHOST))
     );
     ui::run(app, library, &address, sender, receiver);
