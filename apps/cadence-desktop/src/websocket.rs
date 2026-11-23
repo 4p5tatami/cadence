@@ -18,6 +18,9 @@ struct StateMsg<'a> {
     track_path: &'a str,
     title: Option<&'a str>,
     artist: Option<&'a str>,
+    file_format: Option<&'a str>,
+    sample_rate: Option<u32>,
+    bitrate: Option<u32>,
     duration_ms: u64,
     position_ms: u64,
     playing: bool,
@@ -104,6 +107,9 @@ fn state_json(status: &StatusResponse, volume: f32) -> String {
         track_path: &status.path,
         title: status.title.as_deref(),
         artist: status.artist.as_deref(),
+        file_format: status.file_format.as_deref(),
+        sample_rate: status.sample_rate,
+        bitrate: status.bitrate,
         duration_ms: status.duration_ms,
         position_ms: status.position_ms,
         playing: status.is_playing(),
@@ -254,6 +260,9 @@ mod tests {
             playback_error: None,
             title: None,
             artist: None,
+            file_format: Some("WAV".into()),
+            sample_rate: Some(48_000),
+            bitrate: Some(768),
             mode: PlayerMode::Default,
         };
         for (state, paused, playing) in [
@@ -275,6 +284,9 @@ mod tests {
         assert_eq!(wire["playback_error"], "Cannot restore playback position");
         assert_eq!(wire["output_state"], "ready");
         assert_eq!(wire["playing"], false);
+        assert_eq!(wire["file_format"], "WAV");
+        assert_eq!(wire["sample_rate"], 48_000);
+        assert_eq!(wire["bitrate"], 768);
     }
 
     #[test]

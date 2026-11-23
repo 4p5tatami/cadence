@@ -4,7 +4,7 @@ mod timeline_source;
 pub use library::{Library, LibraryRecord, TrackRecord};
 
 use anyhow::{Context, Result};
-use lofty::file::TaggedFile;
+use lofty::file::FileType;
 use rodio::{OutputStream, OutputStreamBuilder, Sink, Source};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -20,24 +20,47 @@ pub struct TrackInfo {
     pub duration_ms: u64,
     pub title: Option<String>,
     pub artist: Option<String>,
+    pub file_format: Option<String>,
+    /// Sample rate in Hz.
+    pub sample_rate: Option<u32>,
+    /// Audio bitrate in kbps.
+    pub bitrate: Option<u32>,
 }
 
-fn get_tagged_file(path: &Path) -> Option<TaggedFile> {
-    lofty::probe::Probe::open(path)
-        .ok()
-        .and_then(|p| p.guess_file_type().ok())
-        .and_then(|p| p.read().ok())
+#[derive(Default)]
+struct ProbedTrack {
+    title: Option<String>,
+    artist: Option<String>,
+    duration_ms: u64,
+    file_format: Option<String>,
+    sample_rate: Option<u32>,
+    bitrate: Option<u32>,
 }
 
-fn probe_tags(path: &Path) -> (Option<String>, Option<String>) {
+fn probe_track(path: &Path) -> ProbedTrack {
     use lofty::prelude::*;
-    let Some(tagged) = get_tagged_file(path) else {
-        return (None, None);
+
+    let tagged = lofty::probe::Probe::open(path).and_then(|probe| probe.guess_file_type()?.read());
+    let Ok(tagged) = tagged else {
+        return ProbedTrack::default();
     };
+    let properties = tagged.properties();
     let tag = tagged.primary_tag().or_else(|| tagged.first_tag());
-    let title = tag.and_then(|t| t.title().as_deref().map(String::from));
-    let artist = tag.and_then(|t| t.artist().as_deref().map(String::from));
-    (title, artist)
+    let file_format = match tagged.file_type() {
+        FileType::Mpeg => "MP3".into(),
+        FileType::Mp4 => "M4A".into(),
+        FileType::Vorbis => "OGG".into(),
+        FileType::Custom(name) => name.to_ascii_uppercase(),
+        file_type => format!("{file_type:?}").to_ascii_uppercase(),
+    };
+    ProbedTrack {
+        title: tag.and_then(|tag| tag.title().map(|title| title.into_owned())),
+        artist: tag.and_then(|tag| tag.artist().map(|artist| artist.into_owned())),
+        duration_ms: properties.duration().as_millis() as u64,
+        file_format: Some(file_format),
+        sample_rate: properties.sample_rate().filter(|&rate| rate > 0),
+        bitrate: properties.audio_bitrate().filter(|&rate| rate > 0),
+    }
 }
 
 /// Fallback duration probe for files where the decoder can't report total_duration()
@@ -308,12 +331,15 @@ impl PlaybackManager {
             .map(|d| d.as_millis() as u64)
             .or_else(|| scan_duration_ms(&path))
             .with_context(|| format!("Cannot determine duration for {:?}", path))?;
-        let (title, artist) = probe_tags(&path);
+        let metadata = probe_track(&path);
         let info = TrackInfo {
             path,
             duration_ms,
-            title,
-            artist,
+            title: metadata.title,
+            artist: metadata.artist,
+            file_format: metadata.file_format,
+            sample_rate: metadata.sample_rate,
+            bitrate: metadata.bitrate,
         };
         self.reset_sink();
         self.position_offset_ms = 0;
@@ -640,7 +666,10 @@ mod playback_tests {
         let mut player = player_with_deferred_connection(Instant::now());
         player.set_volume(0.5);
         assert_eq!(player.playback_manager.sink.volume(), 0.125);
-        player.load_and_play(fixture.0.clone()).unwrap();
+        let track = player.load_and_play(fixture.0.clone()).unwrap();
+        assert_eq!(track.file_format.as_deref(), Some("WAV"));
+        assert_eq!(track.sample_rate, Some(44_100));
+        assert_eq!(track.bitrate, Some(706));
         player.load_and_play(fixture.0.clone()).unwrap();
         assert_eq!(player.volume(), 0.5);
         assert_eq!(player.playback_manager.sink.volume(), 0.125);
