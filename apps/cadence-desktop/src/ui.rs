@@ -569,6 +569,9 @@ mod tests {
             playback_error: None,
             title: Some("Title".into()),
             artist: Some("Artist".into()),
+            file_format: None,
+            sample_rate: None,
+            bitrate: None,
             mode: PlayerMode::Default,
         };
         assert_eq!(
