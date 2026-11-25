@@ -1,7 +1,7 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
 
 use cadence_core::{library::IndexCancellation, Library, LibraryRecord};
@@ -10,18 +10,22 @@ use fltk::{
     button::Button,
     dialog::{FileDialog, FileDialogAction, FileDialogType},
     draw::{self, LineStyle},
-    enums::{Align, Color, Font, FrameType},
+    enums::{Align, CallbackTrigger, Color, Font, FrameType},
     frame::Frame,
     group::{Group, Scroll, ScrollType},
     image::PngImage,
     prelude::*,
+    valuator::NiceSlider,
     window::Window,
 };
+
+use crate::player::PlayerMessage;
 
 const MARGIN: i32 = 30;
 const LIST_TOP: i32 = 134;
 const ROW_HEIGHT: i32 = 76;
 const SCROLLBAR_WIDTH: i32 = 14;
+const VOLUME_WIDTH: i32 = 100;
 const TEXT: Color = Color::from_hex(0x141518);
 const MUTED: Color = Color::from_hex(0x595f69);
 const BORDER: Color = Color::from_hex(0xc9cdd3);
@@ -46,7 +50,11 @@ pub(crate) enum Message {
     RemoveFolder(i64),
     ScanProgress(usize),
     Finished(Result<(), String>),
-    Playback(PlaybackDisplay),
+    Playback {
+        display: Option<PlaybackDisplay>,
+        volume: f32,
+        requested_at: Instant,
+    },
 }
 
 enum Operation {
@@ -58,10 +66,11 @@ pub(crate) fn run(
     app: &app::App,
     library: Arc<Library>,
     address: &str,
+    player: mpsc::Sender<PlayerMessage>,
     sender: app::Sender<Message>,
     receiver: app::Receiver<Message>,
 ) {
-    let mut view = LibraryView::new(sender, address);
+    let mut view = LibraryView::new(sender, address, player);
     view.refresh(&library, sender);
     view.window.show();
 
@@ -76,8 +85,15 @@ pub(crate) fn run(
         }
         while let Some(message) = receiver.recv() {
             let operation = match message {
-                Message::Playback(display) => {
-                    view.playback.update(display);
+                Message::Playback {
+                    display,
+                    volume,
+                    requested_at,
+                } => {
+                    if let Some(display) = display {
+                        view.playback.update(display);
+                    }
+                    view.sync_volume(volume, requested_at);
                     continue;
                 }
                 Message::AddFolder if !busy => {
@@ -408,11 +424,18 @@ struct LibraryView {
     rows: Vec<Group>,
     status: Frame,
     playback: PlaybackBox,
+    volume: NiceSlider,
+    volume_label: Frame,
+    last_volume_edit: Rc<Cell<Option<Instant>>>,
     address: Frame,
 }
 
 impl LibraryView {
-    fn new(sender: app::Sender<Message>, address: &str) -> Self {
+    fn new(
+        sender: app::Sender<Message>,
+        address: &str,
+        player: mpsc::Sender<PlayerMessage>,
+    ) -> Self {
         let mut window = Window::new(0, 0, 770, 530, "cadence desktop").center_screen();
         window.set_color(Color::White);
         window.size_range(540, 381, 0, 0);
@@ -475,6 +498,32 @@ impl LibraryView {
         status.set_align(Align::Left | Align::Inside | Align::Wrap | Align::Clip);
         status.set_label_size(15);
         let playback = PlaybackBox::new();
+
+        let mut volume_label = Frame::default().with_label("Volume 100%");
+        volume_label.set_label_size(15);
+        volume_label.set_label_color(TEXT);
+        let mut volume = NiceSlider::default();
+        // FLTK vertical sliders lay out their bounds from top to bottom.
+        volume.set_bounds(100.0, 0.0);
+        volume.set_step(1.0, 1);
+        volume.set_value(100.0);
+        volume.set_selection_color(BLUE);
+        volume.set_tooltip("Playback volume");
+        volume.set_trigger(CallbackTrigger::Changed);
+        let last_volume_edit = Rc::new(Cell::new(None));
+        let last_edit = Rc::clone(&last_volume_edit);
+        let mut label = volume_label.clone();
+        volume.set_callback(move |slider| {
+            let percent = slider.value();
+            if player
+                .send(PlayerMessage::SetVolume((percent / 100.0) as f32))
+                .is_ok()
+            {
+                last_edit.set(Some(Instant::now()));
+                set_volume_label(&mut label, percent);
+            }
+        });
+
         let mut address = Frame::default().with_label(address);
         address.set_align(Align::Left | Align::Inside | Align::Clip);
         address.set_label_size(15);
@@ -492,6 +541,9 @@ impl LibraryView {
             rows: Vec::new(),
             status,
             playback,
+            volume,
+            volume_label,
+            last_volume_edit,
             address,
         };
         view.layout();
@@ -583,21 +635,50 @@ impl LibraryView {
             row.resize(MARGIN + 1, y, row_width, ROW_HEIGHT);
         }
         let below_list = LIST_TOP + card_height;
-        self.playback.frame.resize(
-            MARGIN + 6,
-            below_list + 8,
-            inner_width - 12,
-            PLAYBACK_HEIGHT,
-        );
+        let playback_width = inner_width - VOLUME_WIDTH - 12;
+        self.playback
+            .frame
+            .resize(MARGIN + 6, below_list + 8, playback_width, PLAYBACK_HEIGHT);
         self.status.resize(
             MARGIN + 6,
             below_list + 8 + PLAYBACK_HEIGHT,
-            inner_width - 12,
+            playback_width,
             49,
+        );
+
+        let volume_x = width - MARGIN - VOLUME_WIDTH;
+        let available = height - 33 - (below_list + 8);
+        let volume_height = available.min(260);
+        let volume_y = below_list + 8 + (available - volume_height) / 2;
+        self.volume_label
+            .resize(volume_x, volume_y, VOLUME_WIDTH, 22);
+        self.volume.resize(
+            volume_x + (VOLUME_WIDTH - 26) / 2,
+            volume_y + 26,
+            26,
+            volume_height - 26,
         );
         self.address
             .resize(MARGIN + 6, height - 33, inner_width - 12, 22);
         self.window.redraw();
+    }
+
+    fn sync_volume(&mut self, level: f32, requested_at: Instant) {
+        // Snapshots queued before a local edit can still carry the old value.
+        if self
+            .last_volume_edit
+            .get()
+            .is_some_and(|edit| requested_at <= edit)
+            || app::pushed()
+                .is_some_and(|widget| widget.as_widget_ptr() == self.volume.as_widget_ptr())
+        {
+            return;
+        }
+        if (self.volume.value() / 100.0) as f32 != level {
+            let percent = f64::from(level) * 100.0;
+            self.volume.set_value(percent);
+            set_volume_label(&mut self.volume_label, percent);
+        }
     }
 
     fn set_busy(&mut self, busy: bool) {
@@ -620,6 +701,11 @@ impl LibraryView {
         });
         self.status.redraw();
     }
+}
+
+fn set_volume_label(label: &mut Frame, percent: f64) {
+    label.set_label(&format!("Volume {percent:.0}%"));
+    label.redraw();
 }
 
 fn folder_row(
