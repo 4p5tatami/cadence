@@ -52,17 +52,20 @@ fn run(app: &fltk::app::App) -> Result<(), Box<dyn Error>> {
     let mut last_idle_connection = None;
     runtime.spawn(websocket::serve(
         listener,
-        player,
+        player.clone(),
         Arc::clone(&library),
-        move |connected, status| {
+        move |connected, snapshot, requested_at| {
             // Active snapshots also drive the marquee, including while playback is paused.
+            let status = snapshot.track.as_ref();
             let idle_connection = status.is_none().then_some(connected);
-            if idle_connection.is_none() || idle_connection != last_idle_connection {
-                sender.send(ui::Message::Playback(ui::PlaybackDisplay::new(
-                    connected, status,
-                )));
-            }
+            let display = (idle_connection.is_none() || idle_connection != last_idle_connection)
+                .then(|| ui::PlaybackDisplay::new(connected, status));
             last_idle_connection = idle_connection;
+            sender.send(ui::Message::Playback {
+                display,
+                volume: snapshot.volume,
+                requested_at,
+            });
         },
     ));
 
@@ -72,7 +75,7 @@ fn run(app: &fltk::app::App) -> Result<(), Box<dyn Error>> {
         "Websocket listening on ws://{}:{PORT}",
         ip.unwrap_or(IpAddr::V4(Ipv4Addr::LOCALHOST))
     );
-    ui::run(app, library, &address, sender, receiver);
+    ui::run(app, library, &address, player, sender, receiver);
     if let Some(mdns) = mdns {
         let _ = mdns.shutdown();
     }

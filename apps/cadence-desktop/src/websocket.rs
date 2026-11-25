@@ -1,5 +1,5 @@
 use std::sync::{mpsc, Arc};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
@@ -7,7 +7,7 @@ use tokio::net::TcpListener;
 use tokio::sync::{broadcast, oneshot};
 use tokio_tungstenite::tungstenite::Message;
 
-use crate::player::{LoadReply, PlayerMessage, StatusResponse};
+use crate::player::{LoadReply, PlayerMessage, Snapshot, StatusResponse};
 use cadence_core::{Library, OutputState, PlayerMode, TrackRecord};
 
 /// State broadcast sent to all clients every 100 ms.
@@ -134,7 +134,7 @@ pub async fn serve(
     listener: TcpListener,
     player_tx: mpsc::Sender<PlayerMessage>,
     library: Arc<Library>,
-    mut on_playback: impl FnMut(bool, Option<&StatusResponse>) + Send + 'static,
+    mut on_playback: impl FnMut(bool, &Snapshot, Instant) + Send + 'static,
 ) {
     let (broadcast_tx, _) = broadcast::channel::<String>(32);
     let broadcast_tx = Arc::new(broadcast_tx);
@@ -146,6 +146,7 @@ pub async fn serve(
             loop {
                 tokio::time::sleep(Duration::from_millis(100)).await;
                 let ptx2 = ptx.clone();
+                let requested_at = Instant::now();
                 let result = tokio::task::spawn_blocking(move || {
                     let (tx, rx) = mpsc::sync_channel(1);
                     ptx2.send(PlayerMessage::Status(tx)).ok();
@@ -154,7 +155,7 @@ pub async fn serve(
                 .await;
 
                 if let Ok(Some(snapshot)) = result {
-                    on_playback(btx.receiver_count() > 0, snapshot.track.as_ref());
+                    on_playback(btx.receiver_count() > 0, &snapshot, requested_at);
                     let wire = match &snapshot.track {
                         Some(status) => state_json(status, snapshot.volume),
                         None => stopped_json(snapshot.volume),
