@@ -12,6 +12,7 @@ export default function TabsLayout() {
             <Tabs.Screen name="connect" />
             <Tabs.Screen name="search" />
             <Tabs.Screen name="library" />
+            <Tabs.Screen name="settings" />
             {/* Not a tab: reached from the mini player, but keeps the tab bar visible. */}
             <Tabs.Screen name="now-playing" options={{ href: null }} />
         </Tabs>

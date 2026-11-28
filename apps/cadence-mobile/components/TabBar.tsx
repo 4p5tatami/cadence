@@ -13,6 +13,7 @@ const TABS: { name: string; label: string; icon: IconName }[] = [
     { name: "connect", label: "Connect", icon: "cast" },
     { name: "search", label: "Search", icon: "search" },
     { name: "library", label: "Library", icon: "music" },
+    { name: "settings", label: "Settings", icon: "settings" },
 ];
 
 /** Routes that hide the mini-player overlay (they show full controls themselves). */
