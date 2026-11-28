@@ -1,27 +1,22 @@
 import { Pressable, StyleSheet, Text, useWindowDimensions, View } from "react-native";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Feather, Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { router } from "expo-router";
 import { Screen } from "@/components/Screen";
 import { SeekBar } from "@/components/SeekBar";
-import { VolumeControl } from "@/components/VolumeControl";
 import { colors, fonts, GUTTER, radius, spacing, type } from "@/constants/theme";
 import type { PlaybackState } from "@/hooks/useDesktopSync";
 import { useCadence } from "@/providers/CadenceProvider";
 
 // Layout measured from the Now Playing mockup (390 pt wide screen).
-const TOP_BAR = 52;
 const ART_INSET = 34; // artwork edge to screen edge
 const ART_TOP = 12;
 const SEEK_INSET = 29; // seek bar edge to screen edge
 const PLAY_SIZE = 66;
-const VOLUME_HEIGHT = 196;
 
 /** Now Playing. Shuffle/repeat, queue, like and the overflow menu are left out until the desktop supports them. */
 export default function NowPlayingScreen() {
-    const { playback, device, status, volume, setVolume, pause, resume, next, previous } = useCadence();
+    const { playback, device, status, pause, resume, next, previous } = useCadence();
     const { width, height } = useWindowDimensions();
-    const insets = useSafeAreaInsets();
 
     // Square artwork; capped by height so the controls still fit on short screens.
     const artSize = Math.round(Math.min(width - 2 * ART_INSET, height * 0.4));
@@ -96,16 +91,6 @@ export default function NowPlayingScreen() {
                     </>
                 )}
             </Screen>
-
-            {/* Floats over the right edge, centred on the artwork, so it doesn't push the layout around. */}
-            {status === "connected" && (
-                <VolumeControl
-                    value={volume ?? 0}
-                    disabled={volume === null}
-                    onChange={setVolume}
-                    style={[styles.volume, { top: insets.top + TOP_BAR + ART_TOP + (artSize - VOLUME_HEIGHT) / 2 }]}
-                />
-            )}
         </View>
     );
 }
@@ -210,5 +195,4 @@ const styles = StyleSheet.create({
     },
     metadataText: { ...type.caption, flexShrink: 1 },
     metadataDivider: { width: 1, height: 18, backgroundColor: colors.track },
-    volume: { position: "absolute", right: 6, height: VOLUME_HEIGHT },
 });

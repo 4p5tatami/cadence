@@ -9,6 +9,8 @@ import { Inter_500Medium } from "@expo-google-fonts/inter/500Medium";
 import { Inter_600SemiBold } from "@expo-google-fonts/inter/600SemiBold";
 import { CadenceProvider } from "@/providers/CadenceProvider";
 import { ToastProvider } from "@/providers/ToastProvider";
+import { SettingsProvider } from "@/providers/SettingsProvider";
+import { VolumeHud } from "@/components/VolumeHud";
 import { colors } from "@/constants/theme";
 
 export default function RootLayout() {
@@ -20,12 +22,15 @@ export default function RootLayout() {
 
     return (
         <SafeAreaProvider>
-            <ToastProvider>
-                <CadenceProvider>
-                    <StatusBar style="light" />
-                    <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: colors.bg } }} />
-                </CadenceProvider>
-            </ToastProvider>
+            <SettingsProvider>
+                <ToastProvider>
+                    <CadenceProvider>
+                        <StatusBar style="light" />
+                        <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: colors.bg } }} />
+                        <VolumeHud />
+                    </CadenceProvider>
+                </ToastProvider>
+            </SettingsProvider>
         </SafeAreaProvider>
     );
 }

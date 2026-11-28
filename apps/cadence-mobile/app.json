@@ -21,7 +21,8 @@
       "expo-router",
       "expo-dev-client",
       "expo-asset",
-      "./plugins/withAndroidRelease"
+      "./plugins/withAndroidRelease",
+      "./plugins/withVolumeKeys"
     ],
     "extra": {
       "router": {},
